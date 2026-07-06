@@ -1,0 +1,119 @@
+package com.chenxy.demo.sql.meta;
+
+import com.chenxy.demo.sql.model.TableInfo;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * 表元数据注册中心
+ */
+public class TableMetaRegistry {
+
+    private final Map<String, TableInfo> aliasColumnMap = new HashMap<String, TableInfo>();
+    private final Map<String, String> aliasTableMap = new HashMap<String, String>();
+    private final Map<String, String> columnAliasMap = new HashMap<String, String>();
+    private final Map<String, List<String>> aliasColumns = new LinkedHashMap<String, List<String>>();
+    private final Set<String> etlMonthColumns = new HashSet<String>();
+
+    public TableMetaRegistry(List<TableInfo> tableInfos) {
+        if (tableInfos == null) {
+            return;
+        }
+        for (TableInfo info : tableInfos) {
+            aliasColumnMap.put(key(info.getAlias(), info.getColumn()), info);
+            aliasTableMap.put(info.getAlias(), info.getTableName());
+            columnAliasMap.put(info.getColumn(), info.getAlias());
+            if (!aliasColumns.containsKey(info.getAlias())) {
+                aliasColumns.put(info.getAlias(), new ArrayList<String>());
+            }
+            aliasColumns.get(info.getAlias()).add(info.getColumn());
+            if ("etl_month".equalsIgnoreCase(info.getColumn())) {
+                etlMonthColumns.add(info.getAlias());
+            }
+        }
+    }
+
+    public TableInfo resolve(String tableAlias, String column) {
+        if (tableAlias != null && !tableAlias.isEmpty()) {
+            TableInfo info = aliasColumnMap.get(key(tableAlias, column));
+            if (info == null) {
+                throw new IllegalArgumentException("未知字段: " + tableAlias + "." + column);
+            }
+            return info;
+        }
+        String alias = columnAliasMap.get(column);
+        if (alias == null) {
+            throw new IllegalArgumentException("未知字段: " + column);
+        }
+        if (countAliasByColumn(column) > 1) {
+            throw new IllegalArgumentException("字段 " + column + " 存在于多张表，请指定表别名");
+        }
+        return aliasColumnMap.get(key(alias, column));
+    }
+
+    public String getTableName(String alias) {
+        String tableName = aliasTableMap.get(alias);
+        if (tableName == null) {
+            throw new IllegalArgumentException("未知表别名: " + alias);
+        }
+        return tableName;
+    }
+
+    public List<String> getBusinessColumns(String alias) {
+        List<String> columns = new ArrayList<String>();
+        List<String> all = aliasColumns.get(alias);
+        if (all == null) {
+            return columns;
+        }
+        for (String column : all) {
+            if (!"etl_month".equalsIgnoreCase(column) && !"cid".equalsIgnoreCase(column)) {
+                columns.add(column);
+            }
+        }
+        return columns;
+    }
+
+    public Set<String> getAllAliases() {
+        return aliasColumns.keySet();
+    }
+
+    public boolean isEtlMonthColumn(String alias, String column) {
+        return "etl_month".equalsIgnoreCase(column);
+    }
+
+    private int countAliasByColumn(String column) {
+        int count = 0;
+        for (String alias : aliasColumns.keySet()) {
+            if (aliasColumns.get(alias).contains(column)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private String key(String alias, String column) {
+        return alias + "#" + column;
+    }
+
+    public List<String> getOrderedBusinessColumns(Set<String> aliases) {
+        List<String> ordered = new ArrayList<String>();
+        for (Map.Entry<String, List<String>> entry : aliasColumns.entrySet()) {
+            if (aliases.contains(entry.getKey())) {
+                ordered.addAll(getBusinessColumns(entry.getKey()));
+            }
+        }
+        return ordered;
+    }
+
+    public Set<String> toAliasSet(List<String> aliases) {
+        return aliases == null ? Collections.<String>emptySet() : new LinkedHashSet<String>(aliases);
+    }
+}
