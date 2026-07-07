@@ -11,7 +11,12 @@ public enum ComparisonOperator {
     LT("<"),
     LE("<="),
     LIKE("LIKE"),
-    IN("IN");
+    NOT_LIKE("NOT LIKE"),
+    IN("IN"),
+    NOT_IN("NOT IN"),
+    BETWEEN("BETWEEN"),
+    IS_NULL("IS NULL"),
+    IS_NOT_NULL("IS NOT NULL");
 
     private final String symbol;
 
@@ -27,9 +32,9 @@ public enum ComparisonOperator {
         if (symbol == null) {
             throw new IllegalArgumentException("操作符不能为空");
         }
-        String normalized = symbol.trim().toUpperCase();
+        String trimmed = symbol.trim();
         for (ComparisonOperator operator : values()) {
-            if (operator.symbol.equalsIgnoreCase(symbol.trim()) || operator.name().equals(normalized)) {
+            if (operator.symbol.equalsIgnoreCase(trimmed)) {
                 return operator;
             }
         }

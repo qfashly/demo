@@ -14,17 +14,21 @@ public class ConditionNode {
         OR,
         /** 最小查询条件单元：同一表的 etl_month 与业务字段条件 */
         MIN_UNIT,
-        COMPARISON
+        COMPARISON,
+        /** 跨表比较 */
+        CROSS_TABLE,
+        /** 函数/子查询等原样 SQL 片段 */
+        RAW
     }
 
     private NodeType type;
     private List<ConditionNode> children = new ArrayList<ConditionNode>();
-    /** MIN_UNIT 时存放同一表的多条比较条件 */
     private String tableAlias;
     private String tableName;
     private List<ComparisonNode> comparisons = new ArrayList<ComparisonNode>();
-    /** COMPARISON 叶子节点 */
     private ComparisonNode comparison;
+    /** RAW 节点 SQL 片段 */
+    private String rawSql;
 
     public static ConditionNode and(List<ConditionNode> children) {
         ConditionNode node = new ConditionNode();
@@ -56,6 +60,20 @@ public class ConditionNode {
         return node;
     }
 
+    public static ConditionNode crossTable(ComparisonNode comparison) {
+        ConditionNode node = new ConditionNode();
+        node.type = NodeType.CROSS_TABLE;
+        node.comparison = comparison;
+        return node;
+    }
+
+    public static ConditionNode raw(String rawSql) {
+        ConditionNode node = new ConditionNode();
+        node.type = NodeType.RAW;
+        node.rawSql = rawSql;
+        return node;
+    }
+
     public NodeType getType() {
         return type;
     }
@@ -78,6 +96,10 @@ public class ConditionNode {
 
     public ComparisonNode getComparison() {
         return comparison;
+    }
+
+    public String getRawSql() {
+        return rawSql;
     }
 
     public void setChildren(List<ConditionNode> children) {

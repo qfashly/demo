@@ -105,9 +105,9 @@ public class SqlQueryServiceTest {
 
         assertSqlContains(result.getQuerySql(),
                 "select t0.cid, t0.ent_name, t0.uni_scid, jtb1.c1, jtb1.c2, jtb2.c3",
-                "select t1.cid, t1.c1, null as c2 from tb1 t1",
                 "union",
-                "select t2.cid, null as c1, t2.c2 from tb2 t2",
+                "from tb1 t1",
+                "from tb2 t2",
                 "select t3.cid, t3.c3",
                 "from tb3 t3",
                 ") jtb1 on t0.cid = jtb1.cid",

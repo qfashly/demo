@@ -202,6 +202,10 @@ public class ConditionValidator {
         if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
             return analyzeMinUnit(node);
         }
+        if (node.getType() == ConditionNode.NodeType.CROSS_TABLE
+                || node.getType() == ConditionNode.NodeType.RAW) {
+            return ConditionType.SATISFIABLE;
+        }
         return ConditionType.UNKNOWN;
     }
 
@@ -348,7 +352,13 @@ public class ConditionValidator {
 
     private String nodeSortKey(ConditionNode node) {
         if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
-            return "1_" + node.getTableAlias();
+            return "2_" + node.getTableAlias();
+        }
+        if (node.getType() == ConditionNode.NodeType.CROSS_TABLE) {
+            return "3_cross";
+        }
+        if (node.getType() == ConditionNode.NodeType.RAW) {
+            return "4_raw";
         }
         return "0_" + node.getType().name();
     }
