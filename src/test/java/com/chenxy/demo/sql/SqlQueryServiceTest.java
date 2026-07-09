@@ -29,7 +29,7 @@ public class SqlQueryServiceTest {
         Assert.assertNotNull(result.getQuerySql());
 
         String expectedQuery = ""
-                + "select t0.cid, t0.ent_name, t0.uni_scid, jtb1.c1\n"
+                + "select t0.cid as cid, t0.ent_name as ent_name, t0.uni_scid as uni_scid, jtb1.c1 as c1\n"
                 + "from \n"
                 + "(\n"
                 + "\tselect cid, ent_name, uni_scid\n"
@@ -62,7 +62,7 @@ public class SqlQueryServiceTest {
         Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
 
         String expectedQuery = ""
-                + "select t0.cid, t0.ent_name, t0.uni_scid, jtb1.c1, jtb2.c2\n"
+                + "select t0.cid as cid, t0.ent_name as ent_name, t0.uni_scid as uni_scid, jtb1.c1 as c1, jtb2.c2 as c2\n"
                 + "from \n"
                 + "(\n"
                 + "\tselect cid, ent_name, uni_scid\n"
@@ -104,7 +104,7 @@ public class SqlQueryServiceTest {
         Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
 
         assertSqlContains(result.getQuerySql(),
-                "select t0.cid, t0.ent_name, t0.uni_scid, jtb1.c1, jtb1.c2, jtb2.c3",
+                "select t0.cid as cid, t0.ent_name as ent_name, t0.uni_scid as uni_scid, jtb1.c1 as c1, jtb1.c2 as c2, jtb2.c3 as c3",
                 "union",
                 "from tb1 t1",
                 "from tb2 t2",
@@ -139,8 +139,8 @@ public class SqlQueryServiceTest {
                 "bus_login_month >= 24",
                 "t_chara_basic_info_change",
                 "bus_le_rep_cha_times_5y <= 3",
-                "jtb1.bus_login_month",
-                "jtb2.bus_le_rep_cha_times_5y");
+                "jtb1.bus_login_month as bus_login_month",
+                "jtb2.bus_le_rep_cha_times_5y as bus_le_rep_cha_times_5y");
     }
 
     @Test

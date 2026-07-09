@@ -77,13 +77,17 @@ public class SqlQueryBuilder {
 
     private String buildSelectColumns(List<JoinUnit> joinUnits) {
         List<String> columns = new ArrayList<String>();
-        columns.add(config.getMainTableAlias() + ".cid");
-        columns.add(config.getMainTableAlias() + ".ent_name");
-        columns.add(config.getMainTableAlias() + ".uni_scid");
+        columns.add(selectWithAlias(config.getMainTableAlias() + ".cid", "cid"));
+        columns.add(selectWithAlias(config.getMainTableAlias() + ".ent_name", "ent_name"));
+        columns.add(selectWithAlias(config.getMainTableAlias() + ".uni_scid", "uni_scid"));
         for (JoinUnit joinUnit : joinUnits) {
             columns.addAll(joinUnit.selectColumns);
         }
         return joinColumns(columns);
+    }
+
+    private String selectWithAlias(String expression, String alias) {
+        return expression + " as " + alias;
     }
 
     private String joinColumns(List<String> columns) {
@@ -168,7 +172,7 @@ public class SqlQueryBuilder {
 
         List<String> selectColumns = new ArrayList<String>();
         for (String column : businessColumns) {
-            selectColumns.add(joinAlias + "." + column);
+            selectColumns.add(selectWithAlias(joinAlias + "." + column, column));
         }
         return new JoinUnit(joinAlias, subquery.toString(), selectColumns);
     }
@@ -210,7 +214,7 @@ public class SqlQueryBuilder {
 
         List<String> selectColumns = new ArrayList<String>();
         for (String column : allColumns) {
-            selectColumns.add(joinAlias + "." + column);
+            selectColumns.add(selectWithAlias(joinAlias + "." + column, column));
         }
         return new JoinUnit(joinAlias, subquery.toString(), selectColumns);
     }

@@ -102,6 +102,20 @@ public class ExtendedSqlQueryServiceTest {
         assertSqlContains(result.getQuerySql(), "union", "tb1", "tb2", "tb3");
     }
 
+    @Test
+    public void testQuerySqlSelectColumnAliases() {
+        SqlQueryService service = new SqlQueryService(baseTables());
+        String condition = "(t1.etl_month = '2026-05-01' and t1.c1 = '28') and (t2.etl_month = '2026-05-01' and t2.c2 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        assertSqlContains(result.getQuerySql(),
+                "t0.cid as cid",
+                "t0.ent_name as ent_name",
+                "t0.uni_scid as uni_scid",
+                "jtb1.c1 as c1",
+                "jtb2.c2 as c2");
+    }
+
     private void assertSqlContains(String actual, String... parts) {
         String normalized = normalizeSql(actual);
         for (String part : parts) {
