@@ -18,7 +18,8 @@ public class ExpressionSanitizer {
     private static final Set<String> ALLOWED_FUNCTIONS = new HashSet<String>(Arrays.asList(
             "DATE", "DATETIME", "YEAR", "MONTH", "DAY", "UPPER", "LOWER", "TRIM", "LENGTH",
             "SUBSTRING", "CONCAT", "IFNULL", "COALESCE", "ABS", "ROUND", "CAST", "CONVERT",
-            "LEFT", "RIGHT", "REPLACE", "NOW", "CURDATE", "STR_TO_DATE", "DATE_FORMAT"
+            "LEFT", "RIGHT", "REPLACE", "NOW", "CURDATE", "STR_TO_DATE", "DATE_FORMAT",
+            "MAX", "MIN", "COUNT", "SUM", "AVG"
     ));
 
     public String sanitizeExpression(String expression) {
@@ -31,6 +32,21 @@ public class ExpressionSanitizer {
         }
         validateFunctions(trimmed);
         return trimmed;
+    }
+
+    public String sanitizeRhsOperand(String expression) {
+        String sanitized = sanitizeExpression(expression);
+        String trimmed = sanitized.trim();
+        if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+            String inner = trimmed.substring(1, trimmed.length() - 1).trim();
+            if (inner.regionMatches(true, 0, "SELECT", 0, 6)) {
+                return "(" + sanitizeSubquery(inner) + ")";
+            }
+        }
+        if (trimmed.regionMatches(true, 0, "SELECT", 0, 6)) {
+            return sanitizeSubquery(trimmed);
+        }
+        return sanitized;
     }
 
     public String sanitizeSubquery(String subquery) {
@@ -48,6 +64,9 @@ public class ExpressionSanitizer {
             if (Character.isLetter(upper.charAt(idx)) || upper.charAt(idx) == '_') {
                 int start = idx;
                 while (idx < upper.length() && (Character.isLetterOrDigit(upper.charAt(idx)) || upper.charAt(idx) == '_')) {
+                    idx++;
+                }
+                while (idx < upper.length() && Character.isWhitespace(upper.charAt(idx))) {
                     idx++;
                 }
                 if (idx < upper.length() && upper.charAt(idx) == '(') {

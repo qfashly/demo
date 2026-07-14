@@ -116,6 +116,28 @@ public class ExtendedSqlQueryServiceTest {
                 "jtb2.c2 as c2");
     }
 
+    @Test
+    public void testEtlMonthSubquery() {
+        SqlQueryService service = new SqlQueryService(baseTables());
+        String condition = "(t1.etl_month = (select max(etl_month) from table1) and t1.c1 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(),
+                "t1.etl_month = (select max(etl_month) from table1)",
+                "and t1.c1 = '28'");
+    }
+
+    @Test
+    public void testEtlMonthFunctionOnRight() {
+        SqlQueryService service = new SqlQueryService(baseTables());
+        String condition = "(t1.etl_month = DATE('2026-05-01') and t1.c1 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(), "t1.etl_month = date('2026-05-01')");
+    }
+
     private void assertSqlContains(String actual, String... parts) {
         String normalized = normalizeSql(actual);
         for (String part : parts) {

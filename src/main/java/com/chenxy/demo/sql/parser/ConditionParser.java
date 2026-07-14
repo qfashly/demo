@@ -301,10 +301,7 @@ public class ConditionParser {
             return RightOperand.field(field);
         }
         if (isExpressionStart()) {
-            String expr = sanitizer.sanitizeExpression(scanExpression());
-            if (expr.regionMatches(true, 0, "SELECT", 0, 6)) {
-                sanitizer.sanitizeSubquery(expr);
-            }
+            String expr = sanitizer.sanitizeRhsOperand(scanExpression());
             return RightOperand.expression(expr);
         }
         return RightOperand.literal(parseLiteralOrExpression());
@@ -312,7 +309,7 @@ public class ConditionParser {
 
     private String parseLiteralOrExpression() {
         if (isExpressionStart()) {
-            return sanitizer.sanitizeExpression(scanExpression());
+            return sanitizer.sanitizeRhsOperand(scanExpression());
         }
         return parseValueToken();
     }
@@ -399,6 +396,14 @@ public class ConditionParser {
     private void appendTokenText(StringBuilder sb, Token token) {
         if (token.type == TokenType.DOT) {
             sb.append(".");
+            return;
+        }
+        if (token.type == TokenType.LPAREN) {
+            sb.append("(");
+            return;
+        }
+        if (token.type == TokenType.RPAREN) {
+            sb.append(")");
             return;
         }
         if (sb.length() > 0 && !endsWithOpenDelimiter(sb)) {
