@@ -143,7 +143,7 @@ public class ComparisonNode {
             return left + " BETWEEN " + value + " AND " + betweenUpper;
         }
         if (operator == ComparisonOperator.IN || operator == ComparisonOperator.NOT_IN || inValues) {
-            return left + " " + operator.getSymbol() + " (" + value + ")";
+            return left + " " + operator.getSymbol() + " " + formatInParentheses(getInOperand());
         }
         if (operator == ComparisonOperator.LIKE || operator == ComparisonOperator.NOT_LIKE) {
             return left + " " + operator.getSymbol() + " " + value;
@@ -152,6 +152,24 @@ public class ComparisonNode {
             return left + " " + operator.getSymbol() + " " + rightExpression;
         }
         return left + " " + operator.getSymbol() + " " + value;
+    }
+
+    private String getInOperand() {
+        if (rightOperandType == OperandType.EXPRESSION && rightExpression != null && !rightExpression.isEmpty()) {
+            return rightExpression;
+        }
+        return value;
+    }
+
+    private String formatInParentheses(String operand) {
+        if (operand == null || operand.trim().isEmpty()) {
+            return "()";
+        }
+        String trimmed = operand.trim();
+        if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+            return trimmed;
+        }
+        return "(" + trimmed + ")";
     }
 
     public String toCrossTableSqlFragment(String leftJoinAlias, String rightJoinAlias) {

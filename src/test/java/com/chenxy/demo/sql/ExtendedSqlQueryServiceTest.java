@@ -63,6 +63,26 @@ public class ExtendedSqlQueryServiceTest {
     }
 
     @Test
+    public void testInWithoutInputParentheses() {
+        SqlQueryService service = new SqlQueryService(baseTables());
+        String condition = "(t1.etl_month = '2026-05-01' and t1.c1 IN '28', '30')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(), "t1.c1 in ('28', '30')");
+    }
+
+    @Test
+    public void testNotInWithoutInputParentheses() {
+        SqlQueryService service = new SqlQueryService(baseTables());
+        String condition = "(t1.etl_month = '2026-05-01' and t1.c1 NOT IN '1', '2')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(), "t1.c1 not in ('1', '2')");
+    }
+
+    @Test
     public void testInSubquery() {
         SqlQueryService service = new SqlQueryService(baseTables());
         String condition = "(t1.etl_month = '2026-05-01' and t1.c1 IN (SELECT '28' FROM tb1 WHERE cid = t1.cid))";

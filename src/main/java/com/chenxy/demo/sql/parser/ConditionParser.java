@@ -110,11 +110,10 @@ public class ConditionParser {
                 return wrapLocalComparison(comparison);
             }
             if (matchKeyword("IN")) {
-                expect(TokenType.LPAREN, "IN 操作符缺少左括号");
-                String values = parseInValues();
-                expect(TokenType.RPAREN, "IN 操作符缺少右括号");
+                String values = parseInContent();
                 ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.NOT_IN, values);
                 comparison.setInValues(true);
+                applyInOperand(comparison, values);
                 return wrapLocalComparison(comparison);
             }
             throw new IllegalArgumentException("NOT 后应为 LIKE 或 IN，实际为: " + current().text);
@@ -128,20 +127,10 @@ public class ConditionParser {
         }
 
         if (matchKeyword("IN")) {
-            expect(TokenType.LPAREN, "IN 操作符缺少左括号");
-            if (current().type == TokenType.IDENT && "SELECT".equalsIgnoreCase(current().text)) {
-                String subquery = scanSelectSubquery();
-                expect(TokenType.RPAREN, "子查询缺少右括号");
-                ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.IN, subquery);
-                comparison.setRightOperandType(OperandType.EXPRESSION);
-                comparison.setRightExpression(subquery);
-                comparison.setInValues(true);
-                return wrapLocalComparison(comparison);
-            }
-            String values = parseInValues();
-            expect(TokenType.RPAREN, "IN 操作符缺少右括号");
-            ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.IN, values);
+            String content = parseInContent();
+            ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.IN, content);
             comparison.setInValues(true);
+            applyInOperand(comparison, content);
             return wrapLocalComparison(comparison);
         }
 
@@ -174,15 +163,8 @@ public class ConditionParser {
                 return ConditionNode.raw(leftExpr + " NOT LIKE " + rhs);
             }
             if (matchKeyword("IN")) {
-                expect(TokenType.LPAREN, "IN 缺少左括号");
-                String content;
-                if (current().type == TokenType.IDENT && "SELECT".equalsIgnoreCase(current().text)) {
-                    content = scanSelectSubquery();
-                } else {
-                    content = parseInValues();
-                }
-                expect(TokenType.RPAREN, "IN 缺少右括号");
-                return ConditionNode.raw(leftExpr + " NOT IN (" + content + ")");
+                String content = parseInContent();
+                return ConditionNode.raw(leftExpr + " NOT IN " + formatInParentheses(content));
             }
         }
         if (matchKeyword("LIKE")) {
@@ -190,15 +172,8 @@ public class ConditionParser {
             return ConditionNode.raw(leftExpr + " LIKE " + rhs);
         }
         if (matchKeyword("IN")) {
-            expect(TokenType.LPAREN, "IN 缺少左括号");
-            String content;
-            if (current().type == TokenType.IDENT && "SELECT".equalsIgnoreCase(current().text)) {
-                content = scanSelectSubquery();
-            } else {
-                content = parseInValues();
-            }
-            expect(TokenType.RPAREN, "IN 缺少右括号");
-            return ConditionNode.raw(leftExpr + " IN (" + content + ")");
+            String content = parseInContent();
+            return ConditionNode.raw(leftExpr + " IN " + formatInParentheses(content));
         }
         if (matchKeyword("BETWEEN")) {
             String lower = parseLiteralOrExpression();
@@ -312,6 +287,43 @@ public class ConditionParser {
             return sanitizer.sanitizeRhsOperand(scanExpression());
         }
         return parseValueToken();
+    }
+
+    private void applyInOperand(ComparisonNode comparison, String content) {
+        if (content.regionMatches(true, 0, "SELECT", 0, 6)) {
+            comparison.setRightOperandType(OperandType.EXPRESSION);
+            comparison.setRightExpression(content);
+        }
+    }
+
+    private String formatInParentheses(String content) {
+        if (content == null || content.trim().isEmpty()) {
+            return "()";
+        }
+        String trimmed = content.trim();
+        if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+            return trimmed;
+        }
+        return "(" + trimmed + ")";
+    }
+
+    /**
+     * 解析 IN / NOT IN 右操作数，输入可带或不带括号，输出 SQL 时统一补括号。
+     */
+    private String parseInContent() {
+        if (match(TokenType.LPAREN)) {
+            String content = parseInInnerContent();
+            expect(TokenType.RPAREN, "IN 操作符缺少右括号");
+            return content;
+        }
+        return parseInInnerContent();
+    }
+
+    private String parseInInnerContent() {
+        if (current().type == TokenType.IDENT && "SELECT".equalsIgnoreCase(current().text)) {
+            return scanSelectSubquery();
+        }
+        return parseInValues();
     }
 
     private String parseInValues() {
