@@ -466,6 +466,35 @@ public class SqlQueryBuilder {
         return rendered;
     }
 
+    private String resolveTableName(String alias, String tableName) {
+        if (tableName != null && !tableName.trim().isEmpty()) {
+            return tableName;
+        }
+        return registry.getTableName(alias);
+    }
+
+    private List<String> extractBusinessColumns(ConditionNode minUnit) {
+        LinkedHashSet<String> columns = new LinkedHashSet<String>();
+        for (ComparisonNode comparison : minUnit.getComparisons()) {
+            String column = comparison.getColumn();
+            if (!registry.isEtlMonthColumn(minUnit.getTableAlias(), column)
+                    && !"cid".equalsIgnoreCase(column)) {
+                columns.add(column);
+            }
+        }
+        return new ArrayList<String>(columns);
+    }
+
+    private String resolveJoinAlias(Map<String, String> aliasJoinMap, String tableAlias, String column) {
+        if (column != null && !column.isEmpty()) {
+            String columnKey = tableAlias + "#" + column;
+            if (aliasJoinMap.containsKey(columnKey)) {
+                return aliasJoinMap.get(columnKey);
+            }
+        }
+        return aliasJoinMap.get(tableAlias);
+    }
+
     private String buildWhereClause(String alias, List<ComparisonNode> comparisons) {
         List<String> parts = new ArrayList<String>();
         for (ComparisonNode comparison : comparisons) {
@@ -491,6 +520,17 @@ public class SqlQueryBuilder {
 
     private static class BuildContext {
         private final Map<String, String> aliasJoinMap = new LinkedHashMap<String, String>();
+
+        void registerMinUnit(ConditionNode minUnit, String joinAlias) {
+            String tableAlias = minUnit.getTableAlias();
+            aliasJoinMap.put(tableAlias, joinAlias);
+            for (ComparisonNode comparison : minUnit.getComparisons()) {
+                String column = comparison.getColumn();
+                if (!"etl_month".equalsIgnoreCase(column) && !"cid".equalsIgnoreCase(column)) {
+                    aliasJoinMap.put(tableAlias + "#" + column, joinAlias);
+                }
+            }
+        }
 
         void register(String tableAlias, String joinAlias) {
             aliasJoinMap.put(tableAlias, joinAlias);

@@ -51,7 +51,6 @@ public class ColumnConditionMerger {
         return dedupeIdentical(list);
     }
 
-
     private List<ComparisonNode> mergeEtlMonth(List<ComparisonNode> list) {
         ComparisonNode sample = list.get(0);
         Set<String> eqValues = new LinkedHashSet<String>();

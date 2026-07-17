@@ -63,6 +63,26 @@ public class ExtendedSqlQueryServiceTest {
     }
 
     @Test
+    public void testInWithoutInputParentheses() {
+        SqlQueryService service = new SqlQueryService(baseTables());
+        String condition = "(t1.etl_month = '2026-05-01' and t1.c1 IN '28', '30')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(), "t1.c1 in ('28', '30')");
+    }
+
+    @Test
+    public void testNotInWithoutInputParentheses() {
+        SqlQueryService service = new SqlQueryService(baseTables());
+        String condition = "(t1.etl_month = '2026-05-01' and t1.c1 NOT IN '1', '2')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(), "t1.c1 not in ('1', '2')");
+    }
+
+    @Test
     public void testInSubquery() {
         SqlQueryService service = new SqlQueryService(baseTables());
         String condition = "(t1.etl_month = '2026-05-01' and t1.c1 IN (SELECT '28' FROM tb1 WHERE cid = t1.cid))";
@@ -100,6 +120,98 @@ public class ExtendedSqlQueryServiceTest {
 
         Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
         assertSqlContains(result.getQuerySql(), "union", "tb1", "tb2", "tb3");
+    }
+
+    @Test
+    public void testSameTableDuplicateEtlMonthMerged() {
+        List<TableInfo> tableInfos = Arrays.asList(
+                new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
+                new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
+                new TableInfo("tb3", "t3", "c4", "VARCHAR", "字段c4")
+        );
+        SqlQueryService service = new SqlQueryService(tableInfos);
+        String condition = "(t3.etl_month = '2026-05-01' and t3.c3 = '28') and (t3.etl_month = '2026-05-01' and t3.c4 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(),
+                "from tb3 t3",
+                "t3.etl_month = '2026-05-01'",
+                "t3.c3 = '28'",
+                "t3.c4 = '28'");
+        String normalized = normalizeSql(result.getQuerySql());
+        Assert.assertEquals(1, countOccurrences(normalized, "t3.etl_month = '2026-05-01'"));
+    }
+
+    @Test
+    public void testSameTableDifferentEtlMonthSnapshots() {
+        List<TableInfo> tableInfos = Arrays.asList(
+                new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
+                new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
+                new TableInfo("tb3", "t3", "c4", "VARCHAR", "字段c4"),
+                new TableInfo("tb3", "t3", "c5", "VARCHAR", "字段c5")
+        );
+        SqlQueryService service = new SqlQueryService(tableInfos);
+        String condition = "(t3.etl_month >= '2026-05-01' and t3.c3 = '28') and (t3.etl_month <= '2027-06-01' and t3.c4 = '28') and (t3.etl_month = '2027-07-01' and t3.c5 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(),
+                "from tb3 t3",
+                "jtb1",
+                "jtb2",
+                "t3.etl_month between '2026-05-01' and '2027-06-01'",
+                "t3.c3 = '28'",
+                "t3.c4 = '28'",
+                "t3.etl_month = '2027-07-01'",
+                "t3.c5 = '28'",
+                "jtb1.c3 as c3",
+                "jtb1.c4 as c4",
+                "jtb2.c5 as c5");
+    }
+
+    @Test
+    public void testContradictoryEtlMonthRangeInSingleSnapshot() {
+        List<TableInfo> tableInfos = Arrays.asList(
+                new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
+                new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
+                new TableInfo("tb3", "t3", "c4", "VARCHAR", "字段c4")
+        );
+        SqlQueryService service = new SqlQueryService(tableInfos);
+        String condition = "(t3.etl_month >= '2026-05-01' and t3.etl_month <= '2025-06-01' and t3.c3 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.CONTRADICTION, result.getValidationResult().getConditionType());
+        Assert.assertNull(result.getQuerySql());
+    }
+
+    @Test
+    public void testValidEtlMonthRangeMergedToBetween() {
+        List<TableInfo> tableInfos = Arrays.asList(
+                new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
+                new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
+                new TableInfo("tb3", "t3", "c4", "VARCHAR", "字段c4")
+        );
+        SqlQueryService service = new SqlQueryService(tableInfos);
+        String condition = "(t3.etl_month >= '2025-05-01' and t3.c3 = '28') and (t3.etl_month <= '2026-06-01' and t3.c4 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(),
+                "from tb3 t3",
+                "t3.etl_month between '2025-05-01' and '2026-06-01'",
+                "t3.c3 = '28'",
+                "t3.c4 = '28'");
+    }
+
+    private int countOccurrences(String text, String part) {
+        int count = 0;
+        int idx = 0;
+        while ((idx = text.indexOf(part, idx)) != -1) {
+            count++;
+            idx += part.length();
+        }
+        return count;
     }
 
     @Test
