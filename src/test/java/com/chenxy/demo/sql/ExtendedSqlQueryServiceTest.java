@@ -143,6 +143,40 @@ public class ExtendedSqlQueryServiceTest {
         Assert.assertEquals(1, countOccurrences(normalized, "t3.etl_month = '2026-05-01'"));
     }
 
+    @Test
+    public void testContradictoryEtlMonthRangeNotMergedToBetween() {
+        List<TableInfo> tableInfos = Arrays.asList(
+                new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
+                new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
+                new TableInfo("tb3", "t3", "c4", "VARCHAR", "字段c4")
+        );
+        SqlQueryService service = new SqlQueryService(tableInfos);
+        String condition = "(t3.etl_month >= '2026-05-01' and t3.c3 = '28') and (t3.etl_month <= '2025-06-01' and t3.c4 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.CONTRADICTION, result.getValidationResult().getConditionType());
+        Assert.assertNull(result.getQuerySql());
+    }
+
+    @Test
+    public void testValidEtlMonthRangeMergedToBetween() {
+        List<TableInfo> tableInfos = Arrays.asList(
+                new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
+                new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
+                new TableInfo("tb3", "t3", "c4", "VARCHAR", "字段c4")
+        );
+        SqlQueryService service = new SqlQueryService(tableInfos);
+        String condition = "(t3.etl_month >= '2025-05-01' and t3.c3 = '28') and (t3.etl_month <= '2026-06-01' and t3.c4 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(),
+                "from tb3 t3",
+                "t3.etl_month between '2025-05-01' and '2026-06-01'",
+                "t3.c3 = '28'",
+                "t3.c4 = '28'");
+    }
+
     private int countOccurrences(String text, String part) {
         int count = 0;
         int idx = 0;

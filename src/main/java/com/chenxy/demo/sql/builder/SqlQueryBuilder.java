@@ -156,7 +156,7 @@ public class SqlQueryBuilder {
 
     private JoinUnit buildSingleTableJoinUnit(ConditionNode minUnit, BuildContext ctx) {
         String alias = minUnit.getTableAlias();
-        String tableName = minUnit.getTableName();
+        String tableName = resolveTableName(alias, minUnit.getTableName());
         String joinAlias = nextJoinAlias();
         ctx.register(alias, joinAlias);
         List<String> businessColumns = registry.getBusinessColumns(alias);
@@ -234,7 +234,7 @@ public class SqlQueryBuilder {
 
     private BranchSql buildMinUnitBranch(ConditionNode minUnit) {
         String alias = minUnit.getTableAlias();
-        String tableName = minUnit.getTableName();
+        String tableName = resolveTableName(alias, minUnit.getTableName());
         String branchAlias = "br_" + alias;
         List<String> columns = registry.getBusinessColumns(alias);
         Map<String, String> columnSelectMap = new LinkedHashMap<String, String>();
@@ -438,6 +438,13 @@ public class SqlQueryBuilder {
             rendered = rendered.replaceAll("\\b" + tableAlias + "\\.", joinAlias + ".");
         }
         return rendered;
+    }
+
+    private String resolveTableName(String alias, String tableName) {
+        if (tableName != null && !tableName.trim().isEmpty()) {
+            return tableName;
+        }
+        return registry.getTableName(alias);
     }
 
     private String buildWhereClause(String alias, List<ComparisonNode> comparisons) {

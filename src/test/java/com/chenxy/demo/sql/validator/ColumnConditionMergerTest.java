@@ -37,6 +37,17 @@ public class ColumnConditionMergerTest {
     }
 
     @Test
+    public void mergeInvalidEtlMonthRangeKeepsSeparateBounds() {
+        ComparisonNode ge = new ComparisonNode("t3", "etl_month", ComparisonOperator.GE, "'2026-05-01'");
+        ComparisonNode le = new ComparisonNode("t3", "etl_month", ComparisonOperator.LE, "'2025-06-01'");
+        List<ComparisonNode> merged = merger.merge(Arrays.asList(ge, le));
+
+        Assert.assertEquals(2, merged.size());
+        Assert.assertEquals(ComparisonOperator.GE, merged.get(0).getOperator());
+        Assert.assertEquals(ComparisonOperator.LE, merged.get(1).getOperator());
+    }
+
+    @Test
     public void mergeEtlMonthGeLeToBetween() {
         ComparisonNode ge = new ComparisonNode("t3", "etl_month", ComparisonOperator.GE, "'2026-05-01'");
         ComparisonNode le = new ComparisonNode("t3", "etl_month", ComparisonOperator.LE, "'2026-06-01'");

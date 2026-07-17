@@ -84,20 +84,24 @@ public class ColumnConditionMerger {
                     betweenUpper = node.getBetweenUpper();
                     break;
                 case GE:
-                    lowerBound = node.getValue();
-                    lowerInclusive = true;
+                    LowerBound mergedLower = mergeLowerBound(lowerBound, lowerInclusive, node.getValue(), true);
+                    lowerBound = mergedLower.value;
+                    lowerInclusive = mergedLower.inclusive;
                     break;
                 case GT:
-                    lowerBound = node.getValue();
-                    lowerInclusive = false;
+                    mergedLower = mergeLowerBound(lowerBound, lowerInclusive, node.getValue(), false);
+                    lowerBound = mergedLower.value;
+                    lowerInclusive = mergedLower.inclusive;
                     break;
                 case LE:
-                    upperBound = node.getValue();
-                    upperInclusive = true;
+                    UpperBound mergedUpper = mergeUpperBound(upperBound, upperInclusive, node.getValue(), true);
+                    upperBound = mergedUpper.value;
+                    upperInclusive = mergedUpper.inclusive;
                     break;
                 case LT:
-                    upperBound = node.getValue();
-                    upperInclusive = false;
+                    mergedUpper = mergeUpperBound(upperBound, upperInclusive, node.getValue(), false);
+                    upperBound = mergedUpper.value;
+                    upperInclusive = mergedUpper.inclusive;
                     break;
                 default:
                     others.add(node);
@@ -112,8 +116,14 @@ public class ColumnConditionMerger {
         List<ComparisonNode> result = new ArrayList<ComparisonNode>();
 
         if (betweenLower != null && betweenUpper != null) {
-            result.add(buildComparison(sample, ComparisonOperator.BETWEEN, betweenLower, betweenUpper));
-        } else if (lowerBound != null && upperBound != null && lowerInclusive && upperInclusive) {
+            if (ComparisonValueUtils.isValidClosedRange(betweenLower, betweenUpper)) {
+                result.add(buildComparison(sample, ComparisonOperator.BETWEEN, betweenLower, betweenUpper));
+            } else {
+                result.add(buildComparison(sample, ComparisonOperator.GE, betweenLower, null));
+                result.add(buildComparison(sample, ComparisonOperator.LE, betweenUpper, null));
+            }
+        } else if (lowerBound != null && upperBound != null && lowerInclusive && upperInclusive
+                && ComparisonValueUtils.isValidClosedRange(lowerBound, upperBound)) {
             result.add(buildComparison(sample, ComparisonOperator.BETWEEN, lowerBound, upperBound));
         } else {
             if (lowerBound != null) {
@@ -226,5 +236,53 @@ public class ColumnConditionMerger {
             return "";
         }
         return value.trim();
+    }
+
+    private LowerBound mergeLowerBound(String current, boolean currentInclusive, String candidate, boolean candidateInclusive) {
+        if (current == null) {
+            return new LowerBound(candidate, candidateInclusive);
+        }
+        int cmp = ComparisonValueUtils.compareValues(candidate, current);
+        if (cmp > 0) {
+            return new LowerBound(candidate, candidateInclusive);
+        }
+        if (cmp == 0 && !candidateInclusive && currentInclusive) {
+            return new LowerBound(current, false);
+        }
+        return new LowerBound(current, currentInclusive);
+    }
+
+    private UpperBound mergeUpperBound(String current, boolean currentInclusive, String candidate, boolean candidateInclusive) {
+        if (current == null) {
+            return new UpperBound(candidate, candidateInclusive);
+        }
+        int cmp = ComparisonValueUtils.compareValues(candidate, current);
+        if (cmp < 0) {
+            return new UpperBound(candidate, candidateInclusive);
+        }
+        if (cmp == 0 && !candidateInclusive && currentInclusive) {
+            return new UpperBound(current, false);
+        }
+        return new UpperBound(current, currentInclusive);
+    }
+
+    private static final class LowerBound {
+        private final String value;
+        private final boolean inclusive;
+
+        private LowerBound(String value, boolean inclusive) {
+            this.value = value;
+            this.inclusive = inclusive;
+        }
+    }
+
+    private static final class UpperBound {
+        private final String value;
+        private final boolean inclusive;
+
+        private UpperBound(String value, boolean inclusive) {
+            this.value = value;
+            this.inclusive = inclusive;
+        }
     }
 }
