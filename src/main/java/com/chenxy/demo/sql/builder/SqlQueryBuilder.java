@@ -134,8 +134,8 @@ public class SqlQueryBuilder {
                                                    List<String> predicates) {
         if (node.getType() == ConditionNode.NodeType.CROSS_TABLE) {
             ComparisonNode comparison = node.getComparison();
-            String leftJoin = aliasJoinMap.get(comparison.getTableAlias());
-            String rightJoin = aliasJoinMap.get(comparison.getRightTableAlias());
+            String leftJoin = resolveJoinAlias(aliasJoinMap, comparison.getTableAlias(), comparison.getColumn());
+            String rightJoin = resolveJoinAlias(aliasJoinMap, comparison.getRightTableAlias(), comparison.getRightColumn());
             if (leftJoin == null || rightJoin == null) {
                 throw new IllegalArgumentException("跨表条件引用了未参与 JOIN 的表: "
                         + comparison.getTableAlias() + "." + comparison.getColumn());
@@ -158,8 +158,8 @@ public class SqlQueryBuilder {
         String alias = minUnit.getTableAlias();
         String tableName = resolveTableName(alias, minUnit.getTableName());
         String joinAlias = nextJoinAlias();
-        ctx.register(alias, joinAlias);
-        List<String> businessColumns = registry.getBusinessColumns(alias);
+        ctx.registerMinUnit(minUnit, joinAlias);
+        List<String> businessColumns = extractBusinessColumns(minUnit);
 
         StringBuilder subquery = new StringBuilder();
         subquery.append("\tselect ").append(alias).append(".cid");
@@ -409,8 +409,8 @@ public class SqlQueryBuilder {
     }
 
     private String renderCrossTablePredicate(ComparisonNode comparison, Map<String, String> aliasJoinMap) {
-        String leftJoin = aliasJoinMap.get(comparison.getTableAlias());
-        String rightJoin = aliasJoinMap.get(comparison.getRightTableAlias());
+        String leftJoin = resolveJoinAlias(aliasJoinMap, comparison.getTableAlias(), comparison.getColumn());
+        String rightJoin = resolveJoinAlias(aliasJoinMap, comparison.getRightTableAlias(), comparison.getRightColumn());
         if (comparison.getLeftExpression() != null && !comparison.getLeftExpression().isEmpty()) {
             String left = renderRawSql(comparison.getLeftExpression(), aliasJoinMap);
             String right = rightJoin + "." + comparison.getRightColumn();
@@ -447,6 +447,28 @@ public class SqlQueryBuilder {
         return registry.getTableName(alias);
     }
 
+    private List<String> extractBusinessColumns(ConditionNode minUnit) {
+        LinkedHashSet<String> columns = new LinkedHashSet<String>();
+        for (ComparisonNode comparison : minUnit.getComparisons()) {
+            String column = comparison.getColumn();
+            if (!registry.isEtlMonthColumn(minUnit.getTableAlias(), column)
+                    && !"cid".equalsIgnoreCase(column)) {
+                columns.add(column);
+            }
+        }
+        return new ArrayList<String>(columns);
+    }
+
+    private String resolveJoinAlias(Map<String, String> aliasJoinMap, String tableAlias, String column) {
+        if (column != null && !column.isEmpty()) {
+            String columnKey = tableAlias + "#" + column;
+            if (aliasJoinMap.containsKey(columnKey)) {
+                return aliasJoinMap.get(columnKey);
+            }
+        }
+        return aliasJoinMap.get(tableAlias);
+    }
+
     private String buildWhereClause(String alias, List<ComparisonNode> comparisons) {
         List<String> parts = new ArrayList<String>();
         for (ComparisonNode comparison : comparisons) {
@@ -472,6 +494,17 @@ public class SqlQueryBuilder {
 
     private static class BuildContext {
         private final Map<String, String> aliasJoinMap = new LinkedHashMap<String, String>();
+
+        void registerMinUnit(ConditionNode minUnit, String joinAlias) {
+            String tableAlias = minUnit.getTableAlias();
+            aliasJoinMap.put(tableAlias, joinAlias);
+            for (ComparisonNode comparison : minUnit.getComparisons()) {
+                String column = comparison.getColumn();
+                if (!"etl_month".equalsIgnoreCase(column) && !"cid".equalsIgnoreCase(column)) {
+                    aliasJoinMap.put(tableAlias + "#" + column, joinAlias);
+                }
+            }
+        }
 
         void register(String tableAlias, String joinAlias) {
             aliasJoinMap.put(tableAlias, joinAlias);

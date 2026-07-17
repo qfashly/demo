@@ -7,6 +7,7 @@ import com.chenxy.demo.sql.model.ConditionNode;
 import com.chenxy.demo.sql.model.OperandType;
 import com.chenxy.demo.sql.model.TableInfo;
 import com.chenxy.demo.sql.validator.ColumnConditionMerger;
+import com.chenxy.demo.sql.validator.MinUnitMergeHelper;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -513,7 +514,17 @@ public class ConditionParser {
 
     private ConditionNode groupMinimumUnits(ConditionNode node) {
         if (node.getType() == ConditionNode.NodeType.AND) {
-            return mergeAndChildren(node.flattenSameType());
+            if (canMergeAsSingleMinUnit(node)) {
+                return mergeAndChildren(node.getChildren());
+            }
+            if (shouldFlattenNestedAnd(node)) {
+                return mergeAndChildren(flattenMergeableAndChildren(node));
+            }
+            List<ConditionNode> groupedChildren = new ArrayList<ConditionNode>();
+            for (ConditionNode child : node.getChildren()) {
+                groupedChildren.add(groupMinimumUnits(child));
+            }
+            return mergeAndChildren(groupedChildren);
         }
         if (node.getType() == ConditionNode.NodeType.OR) {
             List<ConditionNode> children = new ArrayList<ConditionNode>();
@@ -528,52 +539,94 @@ public class ConditionParser {
         return node;
     }
 
+    private boolean canMergeAsSingleMinUnit(ConditionNode andNode) {
+        for (ConditionNode child : andNode.getChildren()) {
+            if (child.getType() != ConditionNode.NodeType.COMPARISON
+                    && child.getType() != ConditionNode.NodeType.RAW) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean shouldFlattenNestedAnd(ConditionNode andNode) {
+        boolean hasAndChild = false;
+        boolean hasLeafChild = false;
+        for (ConditionNode child : andNode.getChildren()) {
+            if (child.getType() == ConditionNode.NodeType.AND) {
+                hasAndChild = true;
+            } else if (child.getType() == ConditionNode.NodeType.COMPARISON
+                    || child.getType() == ConditionNode.NodeType.RAW) {
+                hasLeafChild = true;
+            } else {
+                return false;
+            }
+        }
+        return hasAndChild && hasLeafChild;
+    }
+
+    private List<ConditionNode> flattenMergeableAndChildren(ConditionNode andNode) {
+        List<ConditionNode> result = new ArrayList<ConditionNode>();
+        for (ConditionNode child : andNode.getChildren()) {
+            if (child.getType() == ConditionNode.NodeType.AND) {
+                result.addAll(flattenMergeableAndChildren(child));
+            } else {
+                result.add(child);
+            }
+        }
+        return result;
+    }
+
     private ConditionNode mergeAndChildren(List<ConditionNode> children) {
+        Map<String, List<ConditionNode>> tableMinUnits = new LinkedHashMap<String, List<ConditionNode>>();
         Map<String, List<ComparisonNode>> tableComparisons = new LinkedHashMap<String, List<ComparisonNode>>();
         Map<String, String> aliasTableNames = new LinkedHashMap<String, String>();
         List<ConditionNode> others = new ArrayList<ConditionNode>();
 
         for (ConditionNode child : children) {
             if (child.getType() == ConditionNode.NodeType.MIN_UNIT) {
-                mergeMinUnit(tableComparisons, aliasTableNames, child);
+                addTableMinUnit(tableMinUnits, aliasTableNames, child);
             } else if (child.getType() == ConditionNode.NodeType.COMPARISON) {
-                ComparisonNode comparison = child.getComparison();
-                TableInfo info = registry.resolve(comparison.getTableAlias(), comparison.getColumn());
-                String alias = info.getAlias();
-                comparison.setTableAlias(alias);
-                if (!tableComparisons.containsKey(alias)) {
-                    tableComparisons.put(alias, new ArrayList<ComparisonNode>());
-                }
-                tableComparisons.get(alias).add(comparison);
-                aliasTableNames.put(alias, info.getTableName());
+                addTableComparison(tableComparisons, aliasTableNames, child.getComparison());
             } else if (child.getType() == ConditionNode.NodeType.CROSS_TABLE
                     || child.getType() == ConditionNode.NodeType.RAW) {
                 others.add(child);
             } else if (child.getType() == ConditionNode.NodeType.OR) {
                 others.add(groupMinimumUnits(child));
             } else if (child.getType() == ConditionNode.NodeType.AND) {
-                ConditionNode mergedChild = mergeAndChildren(child.flattenSameType());
-                if (mergedChild.getType() == ConditionNode.NodeType.AND) {
-                    for (ConditionNode grand : mergedChild.getChildren()) {
-                        distributeAndChild(grand, tableComparisons, aliasTableNames, others);
-                    }
-                } else {
-                    distributeAndChild(mergedChild, tableComparisons, aliasTableNames, others);
-                }
+                ConditionNode groupedChild = groupMinimumUnits(child);
+                distributeAndChild(groupedChild, tableMinUnits, tableComparisons, aliasTableNames, others);
             } else {
                 others.add(child);
             }
         }
 
-        List<ConditionNode> merged = new ArrayList<ConditionNode>(others);
         for (Map.Entry<String, List<ComparisonNode>> entry : tableComparisons.entrySet()) {
             String alias = entry.getKey();
             String tableName = aliasTableNames.get(alias);
             if (tableName == null || tableName.trim().isEmpty()) {
                 tableName = registry.getTableName(alias);
             }
-            List<ComparisonNode> mergedComparisons = new ColumnConditionMerger(etlMonthColumn).merge(entry.getValue());
-            merged.add(buildMinUnit(alias, tableName, mergedComparisons));
+            addTableMinUnit(tableMinUnits, aliasTableNames,
+                    buildMinUnit(alias, tableName, entry.getValue()));
+        }
+
+        List<ConditionNode> merged = new ArrayList<ConditionNode>(others);
+        ColumnConditionMerger merger = new ColumnConditionMerger(etlMonthColumn);
+        for (Map.Entry<String, List<ConditionNode>> entry : tableMinUnits.entrySet()) {
+            String alias = entry.getKey();
+            List<ConditionNode> units = MinUnitMergeHelper.mergeCompatible(entry.getValue(), merger);
+            for (ConditionNode unit : units) {
+                String tableName = unit.getTableName();
+                if (tableName == null || tableName.trim().isEmpty()) {
+                    tableName = aliasTableNames.get(alias);
+                }
+                if (tableName == null || tableName.trim().isEmpty()) {
+                    tableName = registry.getTableName(alias);
+                }
+                List<ComparisonNode> mergedComparisons = merger.merge(unit.getComparisons());
+                merged.add(buildMinUnit(alias, tableName, mergedComparisons));
+            }
         }
         if (merged.size() == 1) {
             return merged.get(0);
@@ -581,38 +634,52 @@ public class ConditionParser {
         return ConditionNode.and(merged);
     }
 
+    private void addTableComparison(Map<String, List<ComparisonNode>> tableComparisons,
+                                    Map<String, String> aliasTableNames,
+                                    ComparisonNode comparison) {
+        if (comparison.isCrossTable()) {
+            throw new IllegalArgumentException("跨表比较不能作为单表最小条件单元的一部分");
+        }
+        TableInfo info = registry.resolve(comparison.getTableAlias(), comparison.getColumn());
+        String alias = info.getAlias();
+        comparison.setTableAlias(alias);
+        if (!tableComparisons.containsKey(alias)) {
+            tableComparisons.put(alias, new ArrayList<ComparisonNode>());
+        }
+        tableComparisons.get(alias).add(comparison);
+        aliasTableNames.put(alias, info.getTableName());
+    }
+
+    private void addTableMinUnit(Map<String, List<ConditionNode>> tableMinUnits,
+                                 Map<String, String> aliasTableNames,
+                                 ConditionNode minUnit) {
+        String alias = minUnit.getTableAlias();
+        if (!tableMinUnits.containsKey(alias)) {
+            tableMinUnits.put(alias, new ArrayList<ConditionNode>());
+        }
+        tableMinUnits.get(alias).add(minUnit);
+        if (minUnit.getTableName() != null && !minUnit.getTableName().trim().isEmpty()) {
+            aliasTableNames.put(alias, minUnit.getTableName());
+        } else if (!aliasTableNames.containsKey(alias)) {
+            aliasTableNames.put(alias, registry.getTableName(alias));
+        }
+    }
+
     private void distributeAndChild(ConditionNode child,
+                                    Map<String, List<ConditionNode>> tableMinUnits,
                                     Map<String, List<ComparisonNode>> tableComparisons,
                                     Map<String, String> aliasTableNames,
                                     List<ConditionNode> others) {
         if (child.getType() == ConditionNode.NodeType.MIN_UNIT) {
-            mergeMinUnit(tableComparisons, aliasTableNames, child);
+            addTableMinUnit(tableMinUnits, aliasTableNames, child);
         } else if (child.getType() == ConditionNode.NodeType.COMPARISON) {
-            ComparisonNode comparison = child.getComparison();
-            TableInfo info = registry.resolve(comparison.getTableAlias(), comparison.getColumn());
-            comparison.setTableAlias(info.getAlias());
-            if (!tableComparisons.containsKey(info.getAlias())) {
-                tableComparisons.put(info.getAlias(), new ArrayList<ComparisonNode>());
+            addTableComparison(tableComparisons, aliasTableNames, child.getComparison());
+        } else if (child.getType() == ConditionNode.NodeType.AND) {
+            for (ConditionNode grand : child.getChildren()) {
+                distributeAndChild(grand, tableMinUnits, tableComparisons, aliasTableNames, others);
             }
-            tableComparisons.get(info.getAlias()).add(comparison);
-            aliasTableNames.put(info.getAlias(), info.getTableName());
         } else {
             others.add(child);
-        }
-    }
-
-    private void mergeMinUnit(Map<String, List<ComparisonNode>> tableComparisons,
-                              Map<String, String> aliasTableNames,
-                              ConditionNode child) {
-        String alias = child.getTableAlias();
-        if (!tableComparisons.containsKey(alias)) {
-            tableComparisons.put(alias, new ArrayList<ComparisonNode>());
-        }
-        tableComparisons.get(alias).addAll(child.getComparisons());
-        if (child.getTableName() != null && !child.getTableName().trim().isEmpty()) {
-            aliasTableNames.put(alias, child.getTableName());
-        } else if (!aliasTableNames.containsKey(alias)) {
-            aliasTableNames.put(alias, registry.getTableName(alias));
         }
     }
 

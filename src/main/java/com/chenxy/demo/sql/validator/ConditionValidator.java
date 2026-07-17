@@ -5,6 +5,7 @@ import com.chenxy.demo.sql.model.ComparisonOperator;
 import com.chenxy.demo.sql.model.ConditionNode;
 import com.chenxy.demo.sql.model.ConditionType;
 import com.chenxy.demo.sql.model.ValidationResult;
+import com.chenxy.demo.sql.validator.MinUnitMergeHelper;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -126,27 +127,23 @@ public class ConditionValidator {
     }
 
     private List<ConditionNode> mergeSameTableMinUnits(List<ConditionNode> nodes) {
-        Map<String, ConditionNode> minUnits = new HashMap<String, ConditionNode>();
+        Map<String, List<ConditionNode>> minUnitsByAlias = new HashMap<String, List<ConditionNode>>();
         List<ConditionNode> others = new ArrayList<ConditionNode>();
         for (ConditionNode node : nodes) {
             if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
                 String alias = node.getTableAlias();
-                if (minUnits.containsKey(alias)) {
-                    ConditionNode existing = minUnits.get(alias);
-                    List<ComparisonNode> merged = new ArrayList<ComparisonNode>(existing.getComparisons());
-                    merged.addAll(node.getComparisons());
-                    merged = columnConditionMerger.merge(merged);
-                    String tableName = existing.getTableName() != null ? existing.getTableName() : node.getTableName();
-                    minUnits.put(alias, ConditionNode.minUnit(alias, tableName, merged));
-                } else {
-                    minUnits.put(alias, node);
+                if (!minUnitsByAlias.containsKey(alias)) {
+                    minUnitsByAlias.put(alias, new ArrayList<ConditionNode>());
                 }
+                minUnitsByAlias.get(alias).add(node);
             } else {
                 others.add(node);
             }
         }
         List<ConditionNode> result = new ArrayList<ConditionNode>(others);
-        result.addAll(minUnits.values());
+        for (Map.Entry<String, List<ConditionNode>> entry : minUnitsByAlias.entrySet()) {
+            result.addAll(MinUnitMergeHelper.mergeCompatible(entry.getValue(), columnConditionMerger));
+        }
         return result;
     }
 
@@ -231,6 +228,14 @@ public class ConditionValidator {
             }
         }
         return ConditionType.SATISFIABLE;
+    }
+
+    static boolean areEtlMonthConstraintsContradictory(List<ComparisonNode> comparisons) {
+        return new ConditionValidator().isContradictory(comparisons);
+    }
+
+    boolean isEtlMonthContradictory(List<ComparisonNode> comparisons) {
+        return isContradictory(comparisons);
     }
 
     private boolean isContradictory(List<ComparisonNode> comparisons) {
