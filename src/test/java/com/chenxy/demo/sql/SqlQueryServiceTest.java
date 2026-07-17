@@ -28,6 +28,7 @@ public class SqlQueryServiceTest {
         Assert.assertNotNull(result.getCountSql());
         Assert.assertNotNull(result.getQuerySql());
 
+
         String expectedQuery = ""
                 + "select t0.cid as cid, t0.ent_name as ent_name, t0.uni_scid as uni_scid, jtb1.c1 as c1\n"
                 + "from \n"
