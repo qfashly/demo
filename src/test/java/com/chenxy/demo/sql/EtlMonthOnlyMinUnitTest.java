@@ -46,6 +46,13 @@ public class EtlMonthOnlyMinUnitTest {
         Assert.assertTrue(sql.contains("t2.etl_month = (select max(etl_month) from tfedbqa.t_chara_op_cost_water)"));
         Assert.assertTrue(sql.contains("jtb1"));
         Assert.assertTrue(sql.contains("jtb2"));
+        Assert.assertTrue(sql.contains("t2.water_usage_amt_last_2m"));
+        Assert.assertTrue(sql.contains("t2.water_usage_amt_last_3m"));
+        Assert.assertTrue(sql.contains("t2.water_usage_amt_last_4m"));
+        Assert.assertTrue(sql.contains("t2.etl_month"));
+        Assert.assertTrue(sql.contains("jtb2.water_usage_amt_last_2m as water_usage_amt_last_2m"));
+        Assert.assertTrue(sql.contains("jtb2.etl_month as etl_month"));
+        Assert.assertFalse(sql.contains("jtb2.cid as"));
     }
 
     @Test

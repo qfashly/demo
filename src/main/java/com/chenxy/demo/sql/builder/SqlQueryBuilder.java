@@ -154,12 +154,12 @@ public class SqlQueryBuilder {
         String alias = minUnit.getTableAlias();
         String tableName = resolveTableName(alias, minUnit.getTableName());
         String joinAlias = nextJoinAlias();
-        ctx.registerMinUnit(minUnit, joinAlias);
-        List<String> businessColumns = extractBusinessColumns(minUnit);
+        List<String> outputColumns = extractOutputColumns(minUnit);
+        ctx.registerMinUnit(minUnit, joinAlias, outputColumns);
 
         StringBuilder subquery = new StringBuilder();
         subquery.append("\tselect ").append("\n\t\t").append(alias).append(".cid");
-        for (String column : businessColumns) {
+        for (String column : outputColumns) {
             subquery.append(", ").append(alias).append(".").append(column);
         }
         subquery.append("\n");
@@ -168,7 +168,7 @@ public class SqlQueryBuilder {
 
         List<String> selectColumns = new ArrayList<String>();
         List<String> selectColumns2 = new ArrayList<String>();
-        for (String column : businessColumns) {
+        for (String column : outputColumns) {
             selectColumns.add(selectWithAlias(joinAlias + "." + column, column));
             selectColumns2.add(column);
         }
@@ -430,16 +430,19 @@ public class SqlQueryBuilder {
         }
         return comparison.toCrossTableSqlFragment(leftJoin, rightJoin);
     }
-    private List<String> extractBusinessColumns(ConditionNode minUnit) {
-        LinkedHashSet<String> columns = new LinkedHashSet<String>();
+    private List<String> extractOutputColumns(ConditionNode minUnit) {
+        String alias = minUnit.getTableAlias();
+        LinkedHashSet<String> fromConditions = new LinkedHashSet<String>();
         for (ComparisonNode comparison : minUnit.getComparisons()) {
             String column = comparison.getColumn();
-            if (!registry.isEtlMonthColumn(minUnit.getTableAlias(), column)
-                    && !"cid".equalsIgnoreCase(column)) {
-                columns.add(column);
+            if (!registry.isEtlMonthColumn(alias, column) && !"cid".equalsIgnoreCase(column)) {
+                fromConditions.add(column);
             }
         }
-        return new ArrayList<String>(columns);
+        if (fromConditions.isEmpty()) {
+            return registry.getOutputColumns(alias);
+        }
+        return new ArrayList<String>(fromConditions);
     }
     private String resolveJoinAlias(Map<String, String> aliasJoinMap, String tableAlias, String column) {
         if (column != null && !column.isEmpty()) {
@@ -495,14 +498,11 @@ public class SqlQueryBuilder {
         void register(String tableAlias, String joinAlias) {
             aliasJoinMap.put(tableAlias, joinAlias);
         }
-        void registerMinUnit(ConditionNode minUnit, String joinAlias) {
+        void registerMinUnit(ConditionNode minUnit, String joinAlias, List<String> outputColumns) {
             String tableAlias = minUnit.getTableAlias();
             aliasJoinMap.put(tableAlias, joinAlias);
-            for (ComparisonNode comparison : minUnit.getComparisons()) {
-                String column = comparison.getColumn();
-                if (!"etl_month".equalsIgnoreCase(column) && !"cid".equalsIgnoreCase(column)) {
-                    aliasJoinMap.put(tableAlias + "#" + column, joinAlias);
-                }
+            for (String column : outputColumns) {
+                aliasJoinMap.put(tableAlias + "#" + column, joinAlias);
             }
         }
         void registerBranchAliases(Map<String, String> branchMap, String unionJoinAlias) {

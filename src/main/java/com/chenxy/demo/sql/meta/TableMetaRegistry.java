@@ -74,6 +74,21 @@ public class TableMetaRegistry {
         return columns;
     }
 
+    /** 输出列：表元数据中除 cid 外的全部字段（含 etl_month） */
+    public List<String> getOutputColumns(String alias) {
+        LinkedHashSet<String> columns = new LinkedHashSet<String>();
+        List<String> all = aliasColumns.get(alias);
+        if (all == null) {
+            return new ArrayList<String>();
+        }
+        for (String column : all) {
+            if (!"cid".equalsIgnoreCase(column)) {
+                columns.add(column);
+            }
+        }
+        return new ArrayList<String>(columns);
+    }
+
     public Set<String> getAllAliases() {
         return aliasColumns.keySet();
     }
