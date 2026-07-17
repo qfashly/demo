@@ -703,8 +703,8 @@ public class ConditionParser {
                 hasBusiness = true;
             }
         }
-        if (!hasBusiness) {
-            throw new IllegalArgumentException("最小查询条件必须包含业务字段，表别名: " + alias);
+        if (!hasEtlMonth || !hasBusiness) {
+            throw new IllegalArgumentException("最小查询条件必须同时包含 etl_month 和业务字段，表别名: " + alias);
         }
         return ConditionNode.minUnit(alias, tableName, comparisons);
     }

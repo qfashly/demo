@@ -7,7 +7,7 @@ import com.chenxy.demo.sql.model.ConditionNode;
 import java.util.ArrayList;
 import java.util.List;
 /**
- * 处理同表多个最小条件单元：相同 etl_month 合并，否则按分区快照规则归并
+ * 处理同表多个最小条件单元：仅当 etl_month 约束完全一致时合并，否则保持各自独立快照
  */
 public final class SameTableMinUnitProcessor {
     private SameTableMinUnitProcessor() {
@@ -16,10 +16,13 @@ public final class SameTableMinUnitProcessor {
         if (units == null || units.size() <= 1) {
             return units;
         }
+        if (SameTableEtlMonthContradictionChecker.isContradictory(units, merger)) {
+            return units;
+        }
         if (hasIdenticalEtlMonthConstraint(units)) {
             return mergeIntoSingleUnit(units, merger);
         }
-        return EtlMonthSnapshotNormalizer.normalize(units);
+        return units;
     }
     private static boolean hasIdenticalEtlMonthConstraint(List<ConditionNode> units) {
         String signature = null;

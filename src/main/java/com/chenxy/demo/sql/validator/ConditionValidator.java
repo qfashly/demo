@@ -131,9 +131,6 @@ public class ConditionValidator {
         }
         List<ConditionNode> result = new ArrayList<ConditionNode>(others);
         for (Map.Entry<String, List<ConditionNode>> entry : minUnitsByAlias.entrySet()) {
-            if (EtlMonthSnapshotNormalizer.isGloballyContradictory(entry.getValue())) {
-                throw new IllegalArgumentException("条件存在逻辑矛盾，无法满足");
-            }
             result.addAll(SameTableMinUnitProcessor.process(entry.getValue(), columnConditionMerger));
         }
         return result;
@@ -164,7 +161,7 @@ public class ConditionValidator {
                 }
             }
             for (List<ConditionNode> units : sameTableUnits.values()) {
-                if (EtlMonthSnapshotNormalizer.isGloballyContradictory(units)) {
+                if (SameTableEtlMonthContradictionChecker.isContradictory(units, columnConditionMerger)) {
                     return ConditionType.CONTRADICTION;
                 }
             }
