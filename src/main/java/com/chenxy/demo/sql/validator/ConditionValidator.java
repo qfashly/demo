@@ -10,6 +10,8 @@ import java.util.*;
  */
 public class ConditionValidator {
 
+    private final ColumnConditionMerger columnConditionMerger = new ColumnConditionMerger();
+
     public ValidationResult validate(ConditionNode root) {
         try {
             ConditionNode optimized = optimize(root);
@@ -41,7 +43,8 @@ public class ConditionValidator {
             return ConditionNode.or(flattenOr(children));
         }
         if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
-            List<ComparisonNode> sorted = new ArrayList<ComparisonNode>(node.getComparisons());
+            List<ComparisonNode> merged = columnConditionMerger.merge(node.getComparisons());
+            List<ComparisonNode> sorted = new ArrayList<ComparisonNode>(merged);
             Collections.sort(sorted, new Comparator<ComparisonNode>() {
                 @Override
                 public int compare(ComparisonNode o1, ComparisonNode o2) {
@@ -113,19 +116,15 @@ public class ConditionValidator {
     }
 
     private List<ConditionNode> mergeSameTableMinUnits(List<ConditionNode> nodes) {
-        Map<String, ConditionNode> minUnits = new HashMap<String, ConditionNode>();
+        Map<String, List<ConditionNode>> minUnitsByAlias = new HashMap<String, List<ConditionNode>>();
         List<ConditionNode> others = new ArrayList<ConditionNode>();
         for (ConditionNode node : nodes) {
             if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
                 String alias = node.getTableAlias();
-                if (minUnits.containsKey(alias)) {
-                    ConditionNode existing = minUnits.get(alias);
-                    List<ComparisonNode> merged = new ArrayList<ComparisonNode>(existing.getComparisons());
-                    merged.addAll(node.getComparisons());
-                    minUnits.put(alias, ConditionNode.minUnit(alias, node.getTableName(), merged));
-                } else {
-                    minUnits.put(alias, node);
+                if (!minUnitsByAlias.containsKey(alias)) {
+                    minUnitsByAlias.put(alias, new ArrayList<ConditionNode>());
                 }
+                minUnitsByAlias.get(alias).add(node);
             } else {
                 others.add(node);
             }
@@ -248,14 +247,20 @@ public class ConditionValidator {
     private boolean isContradictory(List<ComparisonNode> comparisons) {
         Set<String> eqValues = new HashSet<String>();
         Set<String> neValues = new HashSet<String>();
-        Double lower = null;
-        boolean lowerInclusive = false;
-        Double upper = null;
-        boolean upperInclusive = false;
+        RangeBound lower = new RangeBound();
+        RangeBound upper = new RangeBound();
 
         for (ComparisonNode comparison : comparisons) {
+            if (comparison.getOperator() == ComparisonOperator.BETWEEN) {
+                if (!ComparisonValueUtils.isValidClosedRange(comparison.getValue(), comparison.getBetweenUpper())) {
+                    return true;
+                }
+                lower.merge(comparison.getValue(), true);
+                upper.mergeUpper(comparison.getBetweenUpper(), true);
+                continue;
+            }
             if (comparison.getOperator() == ComparisonOperator.EQ) {
-                String value = stripQuote(comparison.getValue());
+                String value = ComparisonValueUtils.stripQuote(comparison.getValue());
                 if (!eqValues.isEmpty() && !eqValues.contains(value)) {
                     return true;
                 }
@@ -264,36 +269,20 @@ public class ConditionValidator {
                     return true;
                 }
             } else if (comparison.getOperator() == ComparisonOperator.NE) {
-                neValues.add(stripQuote(comparison.getValue()));
+                neValues.add(ComparisonValueUtils.stripQuote(comparison.getValue()));
             } else {
-                Double numeric = tryParseNumber(comparison.getValue());
-                if (numeric == null) {
-                    continue;
-                }
                 switch (comparison.getOperator()) {
                     case GT:
-                        if (lower == null || numeric > lower) {
-                            lower = numeric;
-                            lowerInclusive = false;
-                        }
+                        lower.merge(comparison.getValue(), false);
                         break;
                     case GE:
-                        if (lower == null || numeric > lower || (numeric.equals(lower) && !lowerInclusive)) {
-                            lower = numeric;
-                            lowerInclusive = true;
-                        }
+                        lower.merge(comparison.getValue(), true);
                         break;
                     case LT:
-                        if (upper == null || numeric < upper) {
-                            upper = numeric;
-                            upperInclusive = false;
-                        }
+                        upper.mergeUpper(comparison.getValue(), false);
                         break;
                     case LE:
-                        if (upper == null || numeric < upper || (numeric.equals(upper) && !upperInclusive)) {
-                            upper = numeric;
-                            upperInclusive = true;
-                        }
+                        upper.mergeUpper(comparison.getValue(), true);
                         break;
                     default:
                         break;
@@ -303,16 +292,18 @@ public class ConditionValidator {
 
         if (!eqValues.isEmpty()) {
             for (String eq : eqValues) {
-                Double numeric = tryParseNumber("'" + eq + "'");
-                if (numeric != null) {
-                    if (lower != null && (numeric < lower || (numeric.equals(lower) && !lowerInclusive))) {
-                        return true;
-                    }
-                    if (upper != null && (numeric > upper || (numeric.equals(upper) && !upperInclusive))) {
-                        return true;
-                    }
+                String quoted = "'" + eq + "'";
+                if (lower.isSet() && !lower.allowsLower(quoted)) {
+                    return true;
+                }
+                if (upper.isSet() && !upper.allowsUpper(quoted)) {
+                    return true;
                 }
             }
+        }
+        if (lower.isSet() && upper.isSet()) {
+            return !ComparisonValueUtils.isValidOpenEndedRange(
+                    lower.value, lower.inclusive, upper.value, upper.inclusive);
         }
         return false;
     }
@@ -359,11 +350,22 @@ public class ConditionValidator {
             if (cmp > 0) {
                 return true;
             }
-            if (lower.equals(upper) && !(lowerInclusive && upperInclusive)) {
+            if (cmp < 0) {
+                return false;
+            }
+            return inclusive;
+        }
+
+        private boolean allowsUpper(String actual) {
+            int cmp = ComparisonValueUtils.compareValues(actual, value);
+            if (cmp < 0) {
                 return true;
             }
+            if (cmp > 0) {
+                return false;
+            }
+            return inclusive;
         }
-        return false;
     }
 
     private boolean isTautology(List<ComparisonNode> comparisons) {

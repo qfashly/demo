@@ -1,9 +1,12 @@
 package com.chenxy.demo.sql.parser;
 
 
+import cn.hutool.json.JSONUtil;
 import com.chenxy.demo.sql.TokenType;
 import com.chenxy.demo.sql.meta.TableMetaRegistry;
 import com.chenxy.demo.sql.model.*;
+import com.chenxy.demo.sql.validator.ColumnConditionMerger;
+import com.chenxy.demo.sql.validator.SameTableMinUnitProcessor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -111,11 +114,10 @@ public class ConditionParser {
             }
 
             if (matchKeyword("IN")) {
-                expect(TokenType.LPAREN, "IN 操作符缺少左括号");
-                String values = parseInValues();
-                expect(TokenType.RPAREN, "IN 操作符缺少右括号");
+                String values = parseInContent();
                 ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.NOT_IN, values);
                 comparison.setInValues(true);
+                applyInOperand(comparison, values);
                 return wrapLocalComparison(comparison);
             }
             throw new IllegalArgumentException("NOT 后应为 LIKE 或 IN，实际为: " + current().text);
@@ -129,20 +131,10 @@ public class ConditionParser {
         }
 
         if (matchKeyword("IN")) {
-            expect(TokenType.LPAREN, "IN 操作符缺少左括号");
-            if (current().type == TokenType.IDENT && "SELECT".equalsIgnoreCase(current().text)) {
-                String subquery = scanSelectSubquery();
-                expect(TokenType.RPAREN, "子查询缺少右括号");
-                ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.IN, subquery);
-                comparison.setRightOperandType(OperandType.EXPRESSION);
-                comparison.setRightExpression(subquery);
-                comparison.setInValues(true);
-                return wrapLocalComparison(comparison);
-            }
-            String values = parseInValues();
-            expect(TokenType.RPAREN, "IN 操作符缺少右括号");
-            ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.IN, values);
+            String content = parseInContent();
+            ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.IN, content);
             comparison.setInValues(true);
+            applyInOperand(comparison, content);
             return wrapLocalComparison(comparison);
         }
 
@@ -175,15 +167,8 @@ public class ConditionParser {
                 return ConditionNode.raw(leftExpr + " NOT LIKE " + rhs);
             }
             if (matchKeyword("IN")) {
-                expect(TokenType.LPAREN, "IN 缺少左括号");
-                String content;
-                if (current().type == TokenType.IDENT && "SELECT".equalsIgnoreCase(current().text)) {
-                    content = scanSelectSubquery();
-                } else {
-                    content = parseInValues();
-                }
-                expect(TokenType.RPAREN, "IN 缺少右括号");
-                return ConditionNode.raw(leftExpr + " NOT IN (" + content + ")");
+                String content = parseInContent();
+                return ConditionNode.raw(leftExpr + " NOT IN " + formatInParentheses(content));
             }
         }
         if (matchKeyword("LIKE")) {
@@ -191,15 +176,8 @@ public class ConditionParser {
             return ConditionNode.raw(leftExpr + " LIKE " + rhs);
         }
         if (matchKeyword("IN")) {
-            expect(TokenType.LPAREN, "IN 缺少左括号");
-            String content;
-            if (current().type == TokenType.IDENT && "SELECT".equalsIgnoreCase(current().text)) {
-                content = scanSelectSubquery();
-            } else {
-                content = parseInValues();
-            }
-            expect(TokenType.RPAREN, "IN 缺少右括号");
-            return ConditionNode.raw(leftExpr + " IN (" + content + ")");
+            String content = parseInContent();
+            return ConditionNode.raw(leftExpr + " IN " + formatInParentheses(content));
         }
         if (matchKeyword("BETWEEN")) {
             String lower = parseLiteralOrExpression();
@@ -535,7 +513,17 @@ public class ConditionParser {
 
     private ConditionNode groupMinimumUnits(ConditionNode node) {
         if (node.getType() == ConditionNode.NodeType.AND) {
-            return mergeAndChildren(node.flattenSameType());
+            if (canMergeAsSingleMinUnit(node)) {
+                return mergeAndChildren(node.getChildren());
+            }
+            if (shouldFlattenNestedAnd(node)) {
+                return mergeAndChildren(flattenMergeableAndChildren(node));
+            }
+            List<ConditionNode> groupedChildren = new ArrayList<ConditionNode>();
+            for (ConditionNode child : node.getChildren()) {
+                groupedChildren.add(groupMinimumUnits(child));
+            }
+            return mergeAndChildren(groupedChildren);
         }
         if (node.getType() == ConditionNode.NodeType.OR) {
             List<ConditionNode> children = new ArrayList<ConditionNode>();
@@ -587,43 +575,29 @@ public class ConditionParser {
     }
 
     private ConditionNode mergeAndChildren(List<ConditionNode> children) {
+        Map<String, List<ConditionNode>> tableMinUnits = new LinkedHashMap<String, List<ConditionNode>>();
         Map<String, List<ComparisonNode>> tableComparisons = new LinkedHashMap<String, List<ComparisonNode>>();
         Map<String, String> aliasTableNames = new LinkedHashMap<String, String>();
         List<ConditionNode> others = new ArrayList<ConditionNode>();
 
         for (ConditionNode child : children) {
             if (child.getType() == ConditionNode.NodeType.MIN_UNIT) {
-                mergeMinUnit(tableComparisons, aliasTableNames, child);
+                addTableMinUnit(tableMinUnits, aliasTableNames, child);
             } else if (child.getType() == ConditionNode.NodeType.COMPARISON) {
-                ComparisonNode comparison = child.getComparison();
-                TableInfo info = registry.resolve(comparison.getTableAlias(), comparison.getColumn());
-                String alias = info.getAlias();
-                comparison.setTableAlias(alias);
-                if (!tableComparisons.containsKey(alias)) {
-                    tableComparisons.put(alias, new ArrayList<ComparisonNode>());
-                }
-                tableComparisons.get(alias).add(comparison);
-                aliasTableNames.put(alias, info.getTableName());
+                addTableComparison(tableComparisons, aliasTableNames, child.getComparison());
             } else if (child.getType() == ConditionNode.NodeType.CROSS_TABLE
                     || child.getType() == ConditionNode.NodeType.RAW) {
                 others.add(child);
             } else if (child.getType() == ConditionNode.NodeType.OR) {
                 others.add(groupMinimumUnits(child));
             } else if (child.getType() == ConditionNode.NodeType.AND) {
-                ConditionNode mergedChild = mergeAndChildren(child.flattenSameType());
-                if (mergedChild.getType() == ConditionNode.NodeType.AND) {
-                    for (ConditionNode grand : mergedChild.getChildren()) {
-                        distributeAndChild(grand, tableComparisons, aliasTableNames, others);
-                    }
-                } else {
-                    distributeAndChild(mergedChild, tableComparisons, aliasTableNames, others);
-                }
+                ConditionNode groupedChild = groupMinimumUnits(child);
+                distributeAndChild(groupedChild, tableMinUnits, tableComparisons, aliasTableNames, others);
             } else {
                 others.add(child);
             }
         }
 
-        List<ConditionNode> merged = new ArrayList<ConditionNode>(others);
         for (Map.Entry<String, List<ComparisonNode>> entry : tableComparisons.entrySet()) {
             String alias = entry.getKey();
             String tableName = aliasTableNames.get(alias);
@@ -687,20 +661,18 @@ public class ConditionParser {
     }
 
     private void distributeAndChild(ConditionNode child,
+                                    Map<String, List<ConditionNode>> tableMinUnits,
                                     Map<String, List<ComparisonNode>> tableComparisons,
                                     Map<String, String> aliasTableNames,
                                     List<ConditionNode> others) {
         if (child.getType() == ConditionNode.NodeType.MIN_UNIT) {
-            mergeMinUnit(tableComparisons, aliasTableNames, child);
+            addTableMinUnit(tableMinUnits, aliasTableNames, child);
         } else if (child.getType() == ConditionNode.NodeType.COMPARISON) {
-            ComparisonNode comparison = child.getComparison();
-            TableInfo info = registry.resolve(comparison.getTableAlias(), comparison.getColumn());
-            comparison.setTableAlias(info.getAlias());
-            if (!tableComparisons.containsKey(info.getAlias())) {
-                tableComparisons.put(info.getAlias(), new ArrayList<ComparisonNode>());
+            addTableComparison(tableComparisons, aliasTableNames, child.getComparison());
+        } else if (child.getType() == ConditionNode.NodeType.AND) {
+            for (ConditionNode grand : child.getChildren()) {
+                distributeAndChild(grand, tableMinUnits, tableComparisons, aliasTableNames, others);
             }
-            tableComparisons.get(info.getAlias()).add(comparison);
-            aliasTableNames.put(info.getAlias(), info.getTableName());
         } else {
             others.add(child);
         }
@@ -719,6 +691,9 @@ public class ConditionParser {
     }
 
     private ConditionNode buildMinUnit(String alias, String tableName, List<ComparisonNode> comparisons) {
+        if (tableName == null || tableName.trim().isEmpty()) {
+            tableName = registry.getTableName(alias);
+        }
         boolean hasEtlMonth = false;
         boolean hasBusiness = false;
         for (ComparisonNode comparison : comparisons) {

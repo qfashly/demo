@@ -161,17 +161,6 @@ public class ComparisonNode {
         return left + " " + operator.getSymbol() + " " + value;
     }
 
-    private String formatInParentheses(String operand) {
-        if (operand == null || operand.trim().isEmpty()) {
-            return "()";
-        }
-        String trimmed = operand.trim();
-        if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
-            return trimmed;
-        }
-        return "(" + trimmed + ")";
-    }
-
     public String toCrossTableSqlFragment(String leftJoinAlias, String rightJoinAlias) {
         String left = leftExpression != null && !leftExpression.isEmpty()
                 ? leftExpression
