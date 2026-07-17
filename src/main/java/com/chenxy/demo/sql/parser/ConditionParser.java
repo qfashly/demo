@@ -6,6 +6,7 @@ import com.chenxy.demo.sql.model.ComparisonOperator;
 import com.chenxy.demo.sql.model.ConditionNode;
 import com.chenxy.demo.sql.model.OperandType;
 import com.chenxy.demo.sql.model.TableInfo;
+import com.chenxy.demo.sql.validator.ColumnConditionMerger;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -566,7 +567,13 @@ public class ConditionParser {
 
         List<ConditionNode> merged = new ArrayList<ConditionNode>(others);
         for (Map.Entry<String, List<ComparisonNode>> entry : tableComparisons.entrySet()) {
-            merged.add(buildMinUnit(entry.getKey(), aliasTableNames.get(entry.getKey()), entry.getValue()));
+            String alias = entry.getKey();
+            String tableName = aliasTableNames.get(alias);
+            if (tableName == null || tableName.trim().isEmpty()) {
+                tableName = registry.getTableName(alias);
+            }
+            List<ComparisonNode> mergedComparisons = new ColumnConditionMerger(etlMonthColumn).merge(entry.getValue());
+            merged.add(buildMinUnit(alias, tableName, mergedComparisons));
         }
         if (merged.size() == 1) {
             return merged.get(0);
@@ -602,7 +609,11 @@ public class ConditionParser {
             tableComparisons.put(alias, new ArrayList<ComparisonNode>());
         }
         tableComparisons.get(alias).addAll(child.getComparisons());
-        aliasTableNames.put(alias, child.getTableName());
+        if (child.getTableName() != null && !child.getTableName().trim().isEmpty()) {
+            aliasTableNames.put(alias, child.getTableName());
+        } else if (!aliasTableNames.containsKey(alias)) {
+            aliasTableNames.put(alias, registry.getTableName(alias));
+        }
     }
 
     private ConditionNode wrapSingleComparison(ComparisonNode comparison) {
@@ -617,6 +628,9 @@ public class ConditionParser {
     }
 
     private ConditionNode buildMinUnit(String alias, String tableName, List<ComparisonNode> comparisons) {
+        if (tableName == null || tableName.trim().isEmpty()) {
+            tableName = registry.getTableName(alias);
+        }
         boolean hasEtlMonth = false;
         boolean hasBusiness = false;
         for (ComparisonNode comparison : comparisons) {

@@ -20,6 +20,8 @@ import java.util.Set;
  */
 public class ConditionValidator {
 
+    private final ColumnConditionMerger columnConditionMerger = new ColumnConditionMerger();
+
     public ValidationResult validate(ConditionNode root) {
         try {
             ConditionNode optimized = optimize(root);
@@ -51,7 +53,8 @@ public class ConditionValidator {
             return ConditionNode.or(flattenOr(children));
         }
         if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
-            List<ComparisonNode> sorted = new ArrayList<ComparisonNode>(node.getComparisons());
+            List<ComparisonNode> merged = columnConditionMerger.merge(node.getComparisons());
+            List<ComparisonNode> sorted = new ArrayList<ComparisonNode>(merged);
             Collections.sort(sorted, new Comparator<ComparisonNode>() {
                 @Override
                 public int compare(ComparisonNode o1, ComparisonNode o2) {
@@ -132,7 +135,9 @@ public class ConditionValidator {
                     ConditionNode existing = minUnits.get(alias);
                     List<ComparisonNode> merged = new ArrayList<ComparisonNode>(existing.getComparisons());
                     merged.addAll(node.getComparisons());
-                    minUnits.put(alias, ConditionNode.minUnit(alias, node.getTableName(), merged));
+                    merged = columnConditionMerger.merge(merged);
+                    String tableName = existing.getTableName() != null ? existing.getTableName() : node.getTableName();
+                    minUnits.put(alias, ConditionNode.minUnit(alias, tableName, merged));
                 } else {
                     minUnits.put(alias, node);
                 }

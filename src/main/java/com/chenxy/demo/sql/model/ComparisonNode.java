@@ -127,6 +127,13 @@ public class ComparisonNode {
         this.inValues = inValues;
     }
 
+    public String getInOperand() {
+        if (rightOperandType == OperandType.EXPRESSION && rightExpression != null && !rightExpression.isEmpty()) {
+            return rightExpression;
+        }
+        return value;
+    }
+
     public String leftSql(String alias) {
         if (leftExpression != null && !leftExpression.isEmpty()) {
             return leftExpression;
@@ -152,13 +159,6 @@ public class ComparisonNode {
             return left + " " + operator.getSymbol() + " " + rightExpression;
         }
         return left + " " + operator.getSymbol() + " " + value;
-    }
-
-    private String getInOperand() {
-        if (rightOperandType == OperandType.EXPRESSION && rightExpression != null && !rightExpression.isEmpty()) {
-            return rightExpression;
-        }
-        return value;
     }
 
     private String formatInParentheses(String operand) {

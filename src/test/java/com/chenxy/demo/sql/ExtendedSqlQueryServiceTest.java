@@ -123,6 +123,37 @@ public class ExtendedSqlQueryServiceTest {
     }
 
     @Test
+    public void testSameTableDuplicateEtlMonthMerged() {
+        List<TableInfo> tableInfos = Arrays.asList(
+                new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
+                new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
+                new TableInfo("tb3", "t3", "c4", "VARCHAR", "字段c4")
+        );
+        SqlQueryService service = new SqlQueryService(tableInfos);
+        String condition = "(t3.etl_month = '2026-05-01' and t3.c3 = '28') and (t3.etl_month = '2026-05-01' and t3.c4 = '28')";
+        SqlBuildResult result = service.build(condition);
+
+        Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
+        assertSqlContains(result.getQuerySql(),
+                "from tb3 t3",
+                "t3.etl_month = '2026-05-01'",
+                "t3.c3 = '28'",
+                "t3.c4 = '28'");
+        String normalized = normalizeSql(result.getQuerySql());
+        Assert.assertEquals(1, countOccurrences(normalized, "t3.etl_month = '2026-05-01'"));
+    }
+
+    private int countOccurrences(String text, String part) {
+        int count = 0;
+        int idx = 0;
+        while ((idx = text.indexOf(part, idx)) != -1) {
+            count++;
+            idx += part.length();
+        }
+        return count;
+    }
+
+    @Test
     public void testQuerySqlSelectColumnAliases() {
         SqlQueryService service = new SqlQueryService(baseTables());
         String condition = "(t1.etl_month = '2026-05-01' and t1.c1 = '28') and (t2.etl_month = '2026-05-01' and t2.c2 = '28')";
