@@ -695,16 +695,14 @@ public class ConditionParser {
             tableName = registry.getTableName(alias);
         }
         boolean hasEtlMonth = false;
-        boolean hasBusiness = false;
         for (ComparisonNode comparison : comparisons) {
             if (etlMonthColumn.equalsIgnoreCase(comparison.getColumn())) {
                 hasEtlMonth = true;
-            } else {
-                hasBusiness = true;
+                break;
             }
         }
-        if (!hasEtlMonth || !hasBusiness) {
-            throw new IllegalArgumentException("最小查询条件必须同时包含 etl_month 和业务字段，表别名: " + alias);
+        if (!hasEtlMonth) {
+            throw new IllegalArgumentException("最小查询条件必须包含 etl_month，表别名: " + alias);
         }
         return ConditionNode.minUnit(alias, tableName, comparisons);
     }
