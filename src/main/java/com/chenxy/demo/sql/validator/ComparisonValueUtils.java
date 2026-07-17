@@ -1,5 +1,8 @@
 package com.chenxy.demo.sql.validator;
 
+import com.chenxy.demo.sql.model.ComparisonNode;
+import com.chenxy.demo.sql.model.OperandType;
+
 /**
  * packageName com.scredit.crs.sql.validator
  *
@@ -60,5 +63,9 @@ public class ComparisonValueUtils {
         } catch (NumberFormatException ex) {
             return null;
         }
+    }
+
+    static boolean hasLiteralRhs(ComparisonNode comparison) {
+        return comparison == null || comparison.getRightOperandType() != OperandType.EXPRESSION;
     }
 }

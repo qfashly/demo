@@ -128,10 +128,19 @@ public class ComparisonNode {
     }
 
     public String getInOperand() {
+        return getRhsSql();
+    }
+
+    /** 右操作数 SQL：字面量取 value，表达式/子查询取 rightExpression */
+    public String getRhsSql() {
         if (rightOperandType == OperandType.EXPRESSION && rightExpression != null && !rightExpression.isEmpty()) {
             return rightExpression;
         }
         return value;
+    }
+
+    public boolean hasDynamicRhs() {
+        return rightOperandType == OperandType.EXPRESSION;
     }
 
     public String leftSql(String alias) {

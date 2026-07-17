@@ -3,6 +3,7 @@ package com.chenxy.demo.sql.validator;
 
 import com.chenxy.demo.sql.model.ComparisonNode;
 import com.chenxy.demo.sql.model.ComparisonOperator;
+import com.chenxy.demo.sql.model.OperandType;
 
 import java.util.*;
 
@@ -64,9 +65,13 @@ public class ColumnConditionMerger {
         boolean upperInclusive = false;
         List<ComparisonNode> others = new ArrayList<ComparisonNode>();
         for (ComparisonNode node : list) {
+            if (!ComparisonValueUtils.hasLiteralRhs(node)) {
+                others.add(node);
+                continue;
+            }
             switch (node.getOperator()) {
                 case EQ:
-                    eqValues.add(normalizeValue(node.getValue()));
+                    eqValues.add(normalizeValue(node.getRhsSql()));
                     break;
                 case IN:
                     inValues.addAll(splitValues(node.getInOperand()));
@@ -145,8 +150,7 @@ public class ColumnConditionMerger {
                                            String value, String betweenUpper) {
         ComparisonNode node = new ComparisonNode(sample.getTableAlias(), sample.getColumn(), operator, value);
         node.setBetweenUpper(betweenUpper);
-        node.setRightOperandType(sample.getRightOperandType());
-        node.setRightExpression(sample.getRightExpression());
+        node.setRightOperandType(OperandType.LITERAL);
         node.setLeftExpression(sample.getLeftExpression());
         if (operator == ComparisonOperator.IN || operator == ComparisonOperator.NOT_IN) {
             node.setInValues(true);
@@ -185,13 +189,16 @@ public class ColumnConditionMerger {
             return false;
         }
         if (a.getOperator() == ComparisonOperator.BETWEEN) {
-            return normalizeValue(a.getValue()).equals(normalizeValue(b.getValue()))
+            return normalizeValue(a.getRhsSql()).equals(normalizeValue(b.getRhsSql()))
                     && normalizeValue(a.getBetweenUpper()).equals(normalizeValue(b.getBetweenUpper()));
         }
         if (a.getOperator() == ComparisonOperator.IN || a.getOperator() == ComparisonOperator.NOT_IN || a.isInValues()) {
             return normalizeValue(a.getInOperand()).equals(normalizeValue(b.getInOperand()));
         }
-        return normalizeValue(a.getValue()).equals(normalizeValue(b.getValue()));
+        if (a.getRightOperandType() != b.getRightOperandType()) {
+            return false;
+        }
+        return normalizeValue(a.getRhsSql()).equals(normalizeValue(b.getRhsSql()));
     }
     private Set<String> splitValues(String raw) {
         Set<String> values = new LinkedHashSet<String>();

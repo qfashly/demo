@@ -242,6 +242,19 @@ public class ConditionValidator {
     }
 
     private boolean isContradictory(List<ComparisonNode> comparisons) {
+        List<ComparisonNode> literalComparisons = new ArrayList<ComparisonNode>();
+        for (ComparisonNode comparison : comparisons) {
+            if (ComparisonValueUtils.hasLiteralRhs(comparison)) {
+                literalComparisons.add(comparison);
+            }
+        }
+        if (literalComparisons.size() <= 1) {
+            return false;
+        }
+        return isLiteralContradictory(literalComparisons);
+    }
+
+    private boolean isLiteralContradictory(List<ComparisonNode> comparisons) {
         Set<String> eqValues = new HashSet<String>();
         Set<String> neValues = new HashSet<String>();
         RangeBound lower = new RangeBound();
@@ -257,7 +270,7 @@ public class ConditionValidator {
                 continue;
             }
             if (comparison.getOperator() == ComparisonOperator.EQ) {
-                String value = ComparisonValueUtils.stripQuote(comparison.getValue());
+                String value = ComparisonValueUtils.stripQuote(comparison.getRhsSql());
                 if (!eqValues.isEmpty() && !eqValues.contains(value)) {
                     return true;
                 }
@@ -266,7 +279,7 @@ public class ConditionValidator {
                     return true;
                 }
             } else if (comparison.getOperator() == ComparisonOperator.NE) {
-                neValues.add(ComparisonValueUtils.stripQuote(comparison.getValue()));
+                neValues.add(ComparisonValueUtils.stripQuote(comparison.getRhsSql()));
             } else {
                 switch (comparison.getOperator()) {
                     case GT:

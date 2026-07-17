@@ -49,9 +49,9 @@ public final class SameTableMinUnitProcessor {
     }
     private static String normalizeValue(ComparisonNode comparison) {
         if (comparison.getOperator() == ComparisonOperator.BETWEEN) {
-            return comparison.getValue() + "#" + comparison.getBetweenUpper();
+            return comparison.getRhsSql() + "#" + comparison.getBetweenUpper();
         }
-        return comparison.getValue();
+        return comparison.getRhsSql();
     }
     private static List<ConditionNode> mergeIntoSingleUnit(List<ConditionNode> units, ColumnConditionMerger merger) {
         List<ComparisonNode> comparisons = new ArrayList<ComparisonNode>();
