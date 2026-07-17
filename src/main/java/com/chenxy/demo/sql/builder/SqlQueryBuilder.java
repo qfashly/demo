@@ -1,17 +1,13 @@
 package com.chenxy.demo.sql.builder;
 
+
 import com.chenxy.demo.sql.meta.TableMetaRegistry;
 import com.chenxy.demo.sql.model.ComparisonNode;
 import com.chenxy.demo.sql.model.ConditionNode;
 import com.chenxy.demo.sql.model.SqlQueryConfig;
 import com.chenxy.demo.sql.model.TableInfo;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * SQL 组装器
@@ -50,11 +46,11 @@ public class SqlQueryBuilder {
         if (countMode) {
             sql.append("select count(1) as cnt\n");
         } else {
-            sql.append("select ").append(buildSelectColumns(joinUnits)).append("\n");
+            sql.append("select ").append("\n\t").append(buildSelectColumns(joinUnits)).append("\n");
         }
         sql.append("from \n");
         sql.append("(\n");
-        sql.append("\tselect cid, ent_name, uni_scid\n");
+        sql.append("\tselect \n\t\tcid, ent_name, uni_scid\n");
         sql.append("\tfrom ").append(config.qualifiedMainTable()).append(" \n");
         sql.append(") ").append(config.getMainTableAlias()).append("\n");
 
@@ -134,8 +130,8 @@ public class SqlQueryBuilder {
                                                    List<String> predicates) {
         if (node.getType() == ConditionNode.NodeType.CROSS_TABLE) {
             ComparisonNode comparison = node.getComparison();
-            String leftJoin = aliasJoinMap.get(comparison.getTableAlias());
-            String rightJoin = aliasJoinMap.get(comparison.getRightTableAlias());
+            String leftJoin = resolveJoinAlias(aliasJoinMap, comparison.getTableAlias(), comparison.getColumn());
+            String rightJoin = resolveJoinAlias(aliasJoinMap, comparison.getRightTableAlias(), comparison.getRightColumn());
             if (leftJoin == null || rightJoin == null) {
                 throw new IllegalArgumentException("跨表条件引用了未参与 JOIN 的表: "
                         + comparison.getTableAlias() + "." + comparison.getColumn());
@@ -156,25 +152,27 @@ public class SqlQueryBuilder {
 
     private JoinUnit buildSingleTableJoinUnit(ConditionNode minUnit, BuildContext ctx) {
         String alias = minUnit.getTableAlias();
-        String tableName = minUnit.getTableName();
+        String tableName = resolveTableName(alias, minUnit.getTableName());
         String joinAlias = nextJoinAlias();
-        ctx.register(alias, joinAlias);
-        List<String> businessColumns = registry.getBusinessColumns(alias);
+        ctx.registerMinUnit(minUnit, joinAlias);
+        List<String> businessColumns = extractBusinessColumns(minUnit);
 
         StringBuilder subquery = new StringBuilder();
-        subquery.append("\tselect ").append(alias).append(".cid");
+        subquery.append("\tselect ").append("\n\t\t").append(alias).append(".cid");
         for (String column : businessColumns) {
             subquery.append(", ").append(alias).append(".").append(column);
         }
         subquery.append("\n");
-        subquery.append("\tfrom ").append(tableName).append(" ").append(alias).append("\n");
+        subquery.append("\tfrom ").append(config.getMainTableSchema()).append(".").append(tableName).append(" ").append(alias).append("\n");
         subquery.append("\twhere ").append(buildWhereClause(alias, minUnit.getComparisons())).append("\n");
 
         List<String> selectColumns = new ArrayList<String>();
+        List<String> selectColumns2 = new ArrayList<String>();
         for (String column : businessColumns) {
             selectColumns.add(selectWithAlias(joinAlias + "." + column, column));
+            selectColumns2.add(column);
         }
-        return new JoinUnit(joinAlias, subquery.toString(), selectColumns);
+        return new JoinUnit(joinAlias, subquery.toString(), selectColumns, selectColumns2);
     }
 
     private JoinUnit buildUnionJoinUnit(ConditionNode orNode, BuildContext ctx) {
@@ -213,10 +211,12 @@ public class SqlQueryBuilder {
         }
 
         List<String> selectColumns = new ArrayList<String>();
+        List<String> selectColumns2 = new ArrayList<String>();
         for (String column : allColumns) {
             selectColumns.add(selectWithAlias(joinAlias + "." + column, column));
+            selectColumns2.add(column);
         }
-        return new JoinUnit(joinAlias, subquery.toString(), selectColumns);
+        return new JoinUnit(joinAlias, subquery.toString(), selectColumns, selectColumns2);
     }
 
     private BranchSql buildBranchSql(ConditionNode branch) {
@@ -234,7 +234,7 @@ public class SqlQueryBuilder {
 
     private BranchSql buildMinUnitBranch(ConditionNode minUnit) {
         String alias = minUnit.getTableAlias();
-        String tableName = minUnit.getTableName();
+        String tableName = resolveTableName(alias, minUnit.getTableName());
         String branchAlias = "br_" + alias;
         List<String> columns = registry.getBusinessColumns(alias);
         Map<String, String> columnSelectMap = new LinkedHashMap<String, String>();
@@ -243,17 +243,24 @@ public class SqlQueryBuilder {
         }
 
         StringBuilder body = new StringBuilder();
-        body.append("\t\tselect ").append(alias).append(".cid as cid");
+        body.append("\t\tselect \n\t\t").append(alias).append(".cid as cid");
         for (String column : columns) {
             body.append(", ").append(alias).append(".").append(column);
         }
         body.append("\n");
-        body.append("\t\tfrom ").append(tableName).append(" ").append(alias).append("\n");
+        body.append("\t\tfrom ").append(config.getMainTableSchema()).append(".").append(tableName).append(" ").append(alias).append("\n");
         body.append("\t\twhere ").append(buildWhereClause(alias, minUnit.getComparisons())).append("\n");
 
         Map<String, String> tableAliasJoinMap = new LinkedHashMap<String, String>();
         tableAliasJoinMap.put(alias, branchAlias);
         return new BranchSql(branchAlias, body.toString(), branchAlias + ".cid", columns, columnSelectMap, tableAliasJoinMap);
+    }
+
+    private String resolveTableName(String alias, String tableName) {
+        if (tableName != null && !tableName.trim().isEmpty()) {
+            return tableName;
+        }
+        return registry.getTableName(alias);
     }
 
     private BranchSql buildAndBranch(ConditionNode andNode) {
@@ -409,8 +416,8 @@ public class SqlQueryBuilder {
     }
 
     private String renderCrossTablePredicate(ComparisonNode comparison, Map<String, String> aliasJoinMap) {
-        String leftJoin = aliasJoinMap.get(comparison.getTableAlias());
-        String rightJoin = aliasJoinMap.get(comparison.getRightTableAlias());
+        String leftJoin = resolveJoinAlias(aliasJoinMap, comparison.getTableAlias(), comparison.getColumn());
+        String rightJoin = resolveJoinAlias(aliasJoinMap, comparison.getRightTableAlias(), comparison.getRightColumn());
         if (comparison.getLeftExpression() != null && !comparison.getLeftExpression().isEmpty()) {
             String left = renderRawSql(comparison.getLeftExpression(), aliasJoinMap);
             String right = rightJoin + "." + comparison.getRightColumn();
@@ -423,11 +430,30 @@ public class SqlQueryBuilder {
         }
         return comparison.toCrossTableSqlFragment(leftJoin, rightJoin);
     }
-
+    private List<String> extractBusinessColumns(ConditionNode minUnit) {
+        LinkedHashSet<String> columns = new LinkedHashSet<String>();
+        for (ComparisonNode comparison : minUnit.getComparisons()) {
+            String column = comparison.getColumn();
+            if (!registry.isEtlMonthColumn(minUnit.getTableAlias(), column)
+                    && !"cid".equalsIgnoreCase(column)) {
+                columns.add(column);
+            }
+        }
+        return new ArrayList<String>(columns);
+    }
+    private String resolveJoinAlias(Map<String, String> aliasJoinMap, String tableAlias, String column) {
+        if (column != null && !column.isEmpty()) {
+            String columnKey = tableAlias + "#" + column;
+            if (aliasJoinMap.containsKey(columnKey)) {
+                return aliasJoinMap.get(columnKey);
+            }
+        }
+        return aliasJoinMap.get(tableAlias);
+    }
     private String renderRawSql(String rawSql, Map<String, String> aliasJoinMap) {
         String rendered = rawSql;
         List<String> aliases = new ArrayList<String>(aliasJoinMap.keySet());
-        java.util.Collections.sort(aliases, new java.util.Comparator<String>() {
+        Collections.sort(aliases, new Comparator<String>() {
             @Override
             public int compare(String o1, String o2) {
                 return o2.length() - o1.length();
@@ -469,7 +495,16 @@ public class SqlQueryBuilder {
         void register(String tableAlias, String joinAlias) {
             aliasJoinMap.put(tableAlias, joinAlias);
         }
-
+        void registerMinUnit(ConditionNode minUnit, String joinAlias) {
+            String tableAlias = minUnit.getTableAlias();
+            aliasJoinMap.put(tableAlias, joinAlias);
+            for (ComparisonNode comparison : minUnit.getComparisons()) {
+                String column = comparison.getColumn();
+                if (!"etl_month".equalsIgnoreCase(column) && !"cid".equalsIgnoreCase(column)) {
+                    aliasJoinMap.put(tableAlias + "#" + column, joinAlias);
+                }
+            }
+        }
         void registerBranchAliases(Map<String, String> branchMap, String unionJoinAlias) {
             for (String tableAlias : branchMap.keySet()) {
                 aliasJoinMap.put(tableAlias, unionJoinAlias);
@@ -485,11 +520,13 @@ public class SqlQueryBuilder {
         private final String joinAlias;
         private final String subquery;
         private final List<String> selectColumns;
+        private final List<String> selectColumns2;
 
-        private JoinUnit(String joinAlias, String subquery, List<String> selectColumns) {
+        private JoinUnit(String joinAlias, String subquery, List<String> selectColumns, List<String> selectColumns2) {
             this.joinAlias = joinAlias;
             this.subquery = subquery;
             this.selectColumns = selectColumns;
+            this.selectColumns2 = selectColumns2;
         }
     }
 
@@ -518,5 +555,18 @@ public class SqlQueryBuilder {
             this.tableAliasJoinMap = tableAliasJoinMap;
             this.localPredicates = localPredicates;
         }
+    }
+
+    public List<String> buildSelectList(ConditionNode condition) {
+        BuildContext ctx = new BuildContext();
+        List<JoinUnit> joinUnits = buildJoinUnits(condition, ctx);
+        List<String> columns = new ArrayList<String>();
+        columns.add("cid");
+        columns.add("ent_name");
+        columns.add("uni_scid");
+        for (JoinUnit joinUnit : joinUnits) {
+            columns.addAll(joinUnit.selectColumns2);
+        }
+        return columns;
     }
 }

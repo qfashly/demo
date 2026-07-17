@@ -1,12 +1,8 @@
 package com.chenxy.demo.sql;
 
+
 import com.chenxy.demo.sql.builder.SqlQueryBuilder;
-import com.chenxy.demo.sql.model.ConditionNode;
-import com.chenxy.demo.sql.model.ConditionType;
-import com.chenxy.demo.sql.model.SqlBuildResult;
-import com.chenxy.demo.sql.model.SqlQueryConfig;
-import com.chenxy.demo.sql.model.TableInfo;
-import com.chenxy.demo.sql.model.ValidationResult;
+import com.chenxy.demo.sql.model.*;
 import com.chenxy.demo.sql.parser.ConditionParser;
 import com.chenxy.demo.sql.validator.ConditionValidator;
 
@@ -38,15 +34,16 @@ public class SqlQueryService {
         ConditionNode parsed = parser.parse(condition);
         ValidationResult validationResult = validator.validate(parsed);
         if (!validationResult.isValid()) {
-            return new SqlBuildResult(validationResult, null, null);
+            return new SqlBuildResult(validationResult, null, null, null);
         }
         ConditionNode optimized = validationResult.getOptimizedCondition();
         if (validationResult.getConditionType() == ConditionType.TAUTOLOGY) {
-            return new SqlBuildResult(validationResult, null, null);
+            return new SqlBuildResult(validationResult, null, null, null);
         }
         String countSql = builder.buildCountSql(optimized);
         String querySql = builder.buildQuerySql(optimized);
-        return new SqlBuildResult(validationResult, countSql, querySql);
+        List<String> buildSelectList = builder.buildSelectList(optimized);
+        return new SqlBuildResult(validationResult, countSql, querySql, buildSelectList);
     }
 
     /**

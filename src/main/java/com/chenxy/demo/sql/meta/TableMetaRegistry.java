@@ -1,16 +1,9 @@
 package com.chenxy.demo.sql.meta;
 
+
 import com.chenxy.demo.sql.model.TableInfo;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * 表元数据注册中心
