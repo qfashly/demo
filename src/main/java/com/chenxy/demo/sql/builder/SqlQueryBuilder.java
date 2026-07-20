@@ -10,7 +10,19 @@ import com.chenxy.demo.sql.model.TableInfo;
 import java.util.*;
 
 /**
- * SQL 组装器
+ * SQL 组装器：将校验后的条件 AST 翻译为最终 SQL。
+ *
+ * <p>生成的 SQL 结构固定为：
+ * <pre>
+ * SELECT t0.*, jtb1.col1, jtb2.col2, ...
+ * FROM (SELECT cid, ent_name, uni_scid FROM 主表) t0
+ * JOIN (SELECT ... FROM 特征表1 WHERE ...) jtb1 ON t0.cid = jtb1.cid
+ * JOIN (SELECT ... FROM 特征表2 WHERE ...) jtb2 ON t0.cid = jtb2.cid
+ * WHERE [跨表条件]
+ * </pre>
+ *
+ * <p>关键映射：一个 {@link com.chenxy.demo.sql.model.ConditionNode.NodeType#MIN_UNIT}
+ * → 一个 jtb 子查询（OR 分支例外，使用 UNION 合并为单个 jtb）。
  */
 public class SqlQueryBuilder {
 
@@ -430,6 +442,14 @@ public class SqlQueryBuilder {
         }
         return comparison.toCrossTableSqlFragment(leftJoin, rightJoin);
     }
+    /**
+     * 决定 jtb 子查询与主 SELECT 的输出列。
+     *
+     * <ul>
+     *   <li>MIN_UNIT 的 WHERE 中出现了业务字段 → 只 SELECT 这些字段</li>
+     *   <li>MIN_UNIT 仅有 etl_month 条件 → SELECT tableInfos 中该表除 cid 外的全部字段</li>
+     * </ul>
+     */
     private List<String> extractOutputColumns(ConditionNode minUnit) {
         String alias = minUnit.getTableAlias();
         LinkedHashSet<String> fromConditions = new LinkedHashSet<String>();

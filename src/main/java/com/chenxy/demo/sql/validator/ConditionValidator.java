@@ -6,7 +6,17 @@ import com.chenxy.demo.sql.model.*;
 import java.util.*;
 
 /**
- * 条件校验与优化器
+ * 条件校验与优化器。
+ *
+ * <p>主要职责：
+ * <ul>
+ *   <li><b>normalize</b>：展平 AND/OR、合并同列条件、处理同表 MIN_UNIT</li>
+ *   <li><b>reorder</b>：稳定排序，保证相同条件生成相同 SQL</li>
+ *   <li><b>analyze</b>：检测矛盾（CONTRADICTION）、恒真（TAUTOLOGY）</li>
+ * </ul>
+ *
+ * <p>etl_month 矛盾判定：同表多个 MIN_UNIT 的 etl_month 合并后，
+ * 若无法用单一分区月份满足，则返回 {@link com.chenxy.demo.sql.model.ConditionType#CONTRADICTION}。
  */
 public class ConditionValidator {
 
@@ -115,6 +125,9 @@ public class ConditionValidator {
         return result;
     }
 
+    /**
+     * 展平 AND 节点并将相邻的同表 MIN_UNIT 交给 {@link SameTableMinUnitProcessor}。
+     */
     private List<ConditionNode> mergeSameTableMinUnits(List<ConditionNode> nodes) {
         Map<String, List<ConditionNode>> minUnitsByAlias = new HashMap<String, List<ConditionNode>>();
         List<ConditionNode> others = new ArrayList<ConditionNode>();
@@ -241,6 +254,10 @@ public class ConditionValidator {
         return isContradictory(comparisons);
     }
 
+    /**
+     * 判断一组比较条件是否逻辑矛盾。
+     * <p>仅对<b>字面量</b>右操作数做静态分析；含子查询/函数表达式时跳过，避免误判。
+     */
     private boolean isContradictory(List<ComparisonNode> comparisons) {
         List<ComparisonNode> literalComparisons = new ArrayList<ComparisonNode>();
         for (ComparisonNode comparison : comparisons) {

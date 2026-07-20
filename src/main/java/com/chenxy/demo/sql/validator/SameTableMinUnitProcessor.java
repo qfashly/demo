@@ -7,7 +7,14 @@ import com.chenxy.demo.sql.model.ConditionNode;
 import java.util.ArrayList;
 import java.util.List;
 /**
- * 处理同表多个最小条件单元：仅当 etl_month 约束完全一致时合并，否则保持各自独立快照
+ * 同表多个 MIN_UNIT 的处理策略。
+ *
+ * <p>当 AND 下同一表别名存在多个 MIN_UNIT（通常来自不同括号分组）时：
+ * <ol>
+ *   <li>若 etl_month 矛盾 → 保持原样，由 {@link ConditionValidator} 返回 CONTRADICTION</li>
+ *   <li>若 etl_month 约束完全相同 → 合并为一个 MIN_UNIT（一个 jtb）</li>
+ *   <li>若 etl_month 约束不同但不矛盾 → 保持多个 MIN_UNIT（多个 jtb，各自带 etl_month）</li>
+ * </ol>
  */
 public final class SameTableMinUnitProcessor {
     private SameTableMinUnitProcessor() {

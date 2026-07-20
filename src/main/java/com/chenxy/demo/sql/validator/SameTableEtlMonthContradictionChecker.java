@@ -7,7 +7,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 检测同表多个 MIN_UNIT 的 etl_month 是否无法由单一分区月份同时满足
+ * 检测同表多个 MIN_UNIT 的 etl_month 是否无法由单一分区月份同时满足。
+ *
+ * <p>做法：收集各 MIN_UNIT 中的 etl_month 比较 → {@link ColumnConditionMerger} 合并
+ * → {@link ConditionValidator#areEtlMonthConstraintsContradictory} 静态判定。
+ *
+ * <p>示例矛盾：{@code = '2026-07-01'} 与 {@code >= '2026-08-01'} 无法由同一月份满足。
  */
 public final class SameTableEtlMonthContradictionChecker {
 

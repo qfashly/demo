@@ -5,19 +5,41 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * 条件抽象语法树节点
+ * 条件抽象语法树（AST）节点。
+ *
+ * <p>解析器将用户输入的 condition 字符串转换为此树；校验器与 SQL 组装器均基于此树工作。
+ *
+ * <p>典型结构示例：
+ * <pre>
+ * AND
+ * ├── MIN_UNIT(t1): [etl_month='2026-07-01', soc_pay_per_num_2m>=0]
+ * └── MIN_UNIT(t2): [etl_month=(select max(...))]
+ * </pre>
  */
 public class ConditionNode {
 
+    /**
+     * 条件节点类型。
+     */
     public enum NodeType {
+        /** 逻辑与 */
         AND,
+        /** 逻辑或；OR 分支在 SQL 层通过 UNION 实现 */
         OR,
-        /** 最小查询条件单元：同一表的 etl_month 与业务字段条件 */
+        /**
+         * 最小查询单元：同一表别名下一组比较条件。
+         * <ul>
+         *   <li>必须包含 {@code etl_month} 条件</li>
+         *   <li>业务字段可选；无业务字段时 jtb 输出 tableInfos 全部列</li>
+         *   <li>每个 MIN_UNIT 对应一个 jtb 子查询</li>
+         * </ul>
+         */
         MIN_UNIT,
+        /** 解析中间态：单条比较，归并阶段会转为 MIN_UNIT 或 CROSS_TABLE */
         COMPARISON,
-        /** 跨表比较 */
+        /** 跨表比较（如 t1.c1 = t2.c2），拼入主查询 WHERE，不参与 jtb 子查询 */
         CROSS_TABLE,
-        /** 函数/子查询等原样 SQL 片段 */
+        /** 函数/复杂表达式，原样拼入 SQL */
         RAW
     }
 

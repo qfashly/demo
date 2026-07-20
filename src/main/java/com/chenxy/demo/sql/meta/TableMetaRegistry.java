@@ -6,7 +6,10 @@ import com.chenxy.demo.sql.model.TableInfo;
 import java.util.*;
 
 /**
- * 表元数据注册中心
+ * 表元数据注册中心，基于 {@link com.chenxy.demo.sql.model.TableInfo} 列表构建索引。
+ *
+ * <p>提供字段解析（{@link #resolve}）、业务列查询（{@link #getBusinessColumns}）、
+ * 输出列查询（{@link #getOutputColumns}）等能力，供解析器与 SQL 组装器使用。
  */
 public class TableMetaRegistry {
 
@@ -60,6 +63,9 @@ public class TableMetaRegistry {
         return tableName;
     }
 
+    /**
+     * 业务列：除 etl_month、cid 外的字段（用于 OR 分支 UNION 等场景）。
+     */
     public List<String> getBusinessColumns(String alias) {
         List<String> columns = new ArrayList<String>();
         List<String> all = aliasColumns.get(alias);
@@ -74,7 +80,10 @@ public class TableMetaRegistry {
         return columns;
     }
 
-    /** 输出列：表元数据中除 cid 外的全部字段（含 etl_month） */
+    /**
+     * 输出列：tableInfos 中该表除 cid 外的全部字段（含 etl_month）。
+     * <p>用于「仅有 etl_month 条件、无业务字段过滤」的 MIN_UNIT，此时 jtb 需输出整表列。
+     */
     public List<String> getOutputColumns(String alias) {
         LinkedHashSet<String> columns = new LinkedHashSet<String>();
         List<String> all = aliasColumns.get(alias);

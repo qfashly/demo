@@ -8,13 +8,16 @@ import com.chenxy.demo.sql.model.OperandType;
 import java.util.*;
 
 /**
- * packageName com.scredit.crs.sql.validator
+ * 同列多条件合并器。
  *
- * @author chenxy
- * @className ColumnConditionMerger
- * @date 17 7月 2026 09:21
- * @Version 1.0.0
- * @description TODO
+ * <p>对单个 MIN_UNIT 内的比较列表，按列名分组后合并：
+ * <ul>
+ *   <li>普通列：去除完全重复的条件</li>
+ *   <li>{@code etl_month}：支持 EQ 合并为 IN、GE+LE 合并为 BETWEEN 等</li>
+ * </ul>
+ *
+ * <p><b>注意</b>：右操作数为子查询/函数（{@link com.chenxy.demo.sql.model.OperandType#EXPRESSION}）
+ * 时不参与字面量合并，原样保留在结果中。
  */
 public class ColumnConditionMerger {
     private final String etlMonthColumn;
@@ -52,6 +55,10 @@ public class ColumnConditionMerger {
         return dedupeIdentical(list);
     }
 
+    /**
+     * etl_month 专用合并：将多个 EQ/IN/GE/LE/BETWEEN 归并为更紧凑的条件。
+     * <p>表达式型条件（子查询等）放入 {@code others} 列表，不参与字面量区间运算。
+     */
     private List<ComparisonNode> mergeEtlMonth(List<ComparisonNode> list) {
         ComparisonNode sample = list.get(0);
         Set<String> eqValues = new LinkedHashSet<String>();

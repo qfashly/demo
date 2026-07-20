@@ -4,13 +4,7 @@ import com.chenxy.demo.sql.model.ComparisonNode;
 import com.chenxy.demo.sql.model.OperandType;
 
 /**
- * packageName com.scredit.crs.sql.validator
- *
- * @author chenxy
- * @className ComparisonValueUtils
- * @date 17 7月 2026 10:22
- * @Version 1.0.0
- * @description TODO
+ * 比较条件中字面量值的工具方法（去引号、大小比较、区间有效性等）。
  */
 public class ComparisonValueUtils {
     private ComparisonValueUtils() {
@@ -65,6 +59,7 @@ public class ComparisonValueUtils {
         }
     }
 
+    /** 右操作数为字面量（非子查询/函数），可参与静态合并与矛盾分析 */
     static boolean hasLiteralRhs(ComparisonNode comparison) {
         return comparison == null || comparison.getRightOperandType() != OperandType.EXPRESSION;
     }

@@ -1,7 +1,11 @@
 package com.chenxy.demo.sql.model;
 
 /**
- * 单个比较表达式，如 t1.c1 = '28'、t1.c1 = t2.c2、t1.c1 IS NULL
+ * 单个比较表达式，如 {@code t1.c1 = '28'}、{@code t1.c1 = t2.c2}、
+ * {@code t1.etl_month = (select max(etl_month) from table1)}。
+ *
+ * <p>右操作数类型见 {@link com.chenxy.demo.sql.model.OperandType}：
+ * 字面量存 {@link #value}，子查询/函数存 {@link #rightExpression}，统一通过 {@link #getRhsSql()} 获取。
  */
 public class ComparisonNode {
 
@@ -139,6 +143,9 @@ public class ComparisonNode {
         return value;
     }
 
+    /**
+     * 是否为动态右操作数（子查询、函数等），此类条件不参与 etl_month 字面量合并与静态矛盾分析。
+     */
     public boolean hasDynamicRhs() {
         return rightOperandType == OperandType.EXPRESSION;
     }

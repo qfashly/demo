@@ -15,7 +15,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 条件表达式解析器
+ * 条件表达式解析器：将 condition 字符串解析为 {@link com.chenxy.demo.sql.model.ConditionNode} AST。
+ *
+ * <p>解析分两阶段：
+ * <ol>
+ *   <li><b>语法分析</b>：tokenize → 递归下降（OR &lt; AND &lt; 比较表达式）</li>
+ *   <li><b>MIN_UNIT 归并</b>：{@link #groupMinimumUnits} 将同表条件聚合为 MIN_UNIT，
+ *       并调用 {@link com.chenxy.demo.sql.validator.SameTableMinUnitProcessor} 处理同表多单元</li>
+ * </ol>
+ *
+ * <p>支持的右操作数类型：字面量、字段引用（跨表）、函数/子查询表达式。
  */
 @Slf4j
 public class ConditionParser {
@@ -511,6 +520,10 @@ public class ConditionParser {
         return trimmed.contains("(") || trimmed.regionMatches(true, 0, "SELECT", 0, 6);
     }
 
+    /**
+     * 第二阶段：将语法树归并为 MIN_UNIT。
+     * <p>同一 AND 下的同表比较会合并；括号分组会保留为独立的 MIN_UNIT（用于多快照 JOIN）。
+     */
     private ConditionNode groupMinimumUnits(ConditionNode node) {
         if (node.getType() == ConditionNode.NodeType.AND) {
             if (canMergeAsSingleMinUnit(node)) {
@@ -574,6 +587,10 @@ public class ConditionParser {
         return result;
     }
 
+    /**
+     * 合并同一 AND 层级的子节点：按表别名聚合比较条件，生成 MIN_UNIT 列表。
+     * <p>同表多个 MIN_UNIT 会交给 {@link com.chenxy.demo.sql.validator.SameTableMinUnitProcessor} 处理。
+     */
     private ConditionNode mergeAndChildren(List<ConditionNode> children) {
         Map<String, List<ConditionNode>> tableMinUnits = new LinkedHashMap<String, List<ConditionNode>>();
         Map<String, List<ComparisonNode>> tableComparisons = new LinkedHashMap<String, List<ComparisonNode>>();
@@ -690,6 +707,9 @@ public class ConditionParser {
         return buildMinUnit(info.getAlias(), info.getTableName(), list);
     }
 
+    /**
+     * 构造 MIN_UNIT 并校验：每个最小单元必须包含 etl_month 条件（业务字段可选）。
+     */
     private ConditionNode buildMinUnit(String alias, String tableName, List<ComparisonNode> comparisons) {
         if (tableName == null || tableName.trim().isEmpty()) {
             tableName = registry.getTableName(alias);
