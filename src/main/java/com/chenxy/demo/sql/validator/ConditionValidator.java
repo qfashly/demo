@@ -1,24 +1,27 @@
 package com.chenxy.demo.sql.validator;
 
-import com.chenxy.demo.sql.model.ComparisonNode;
-import com.chenxy.demo.sql.model.ComparisonOperator;
-import com.chenxy.demo.sql.model.ConditionNode;
-import com.chenxy.demo.sql.model.ConditionType;
-import com.chenxy.demo.sql.model.ValidationResult;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import com.chenxy.demo.sql.model.*;
+import com.chenxy.demo.sql.optimizer.SqlQueryOptimizer;
+
+import java.util.*;
 
 /**
- * 条件校验与优化器
+ * 条件校验与优化器。
+ *
+ * <p>主要职责：
+ * <ul>
+ *   <li><b>normalize</b>：展平 AND/OR、合并同列条件、处理同表 MIN_UNIT</li>
+ *   <li><b>reorder</b>：稳定排序，保证相同条件生成相同 SQL</li>
+ *   <li><b>analyze</b>：检测矛盾（CONTRADICTION）、恒真（TAUTOLOGY）</li>
+ * </ul>
+ *
+ * <p>etl_month 矛盾判定：同表多个 MIN_UNIT 的 etl_month 合并后，
+ * 若无法用单一分区月份满足，则返回 {@link com.chenxy.demo.sql.model.ConditionType#CONTRADICTION}。
  */
 public class ConditionValidator {
+
+    private final ColumnConditionMerger columnConditionMerger = new ColumnConditionMerger();
 
     public ValidationResult validate(ConditionNode root) {
         try {
@@ -36,7 +39,8 @@ public class ConditionValidator {
 
     public ConditionNode optimize(ConditionNode root) {
         ConditionNode normalized = normalize(root);
-        return reorder(normalized);
+        ConditionNode sqlOptimized = SqlQueryOptimizer.optimize(normalized, columnConditionMerger);
+        return reorder(sqlOptimized);
     }
 
     private ConditionNode normalize(ConditionNode node) {
@@ -51,7 +55,8 @@ public class ConditionValidator {
             return ConditionNode.or(flattenOr(children));
         }
         if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
-            List<ComparisonNode> sorted = new ArrayList<ComparisonNode>(node.getComparisons());
+            List<ComparisonNode> merged = columnConditionMerger.merge(node.getComparisons());
+            List<ComparisonNode> sorted = new ArrayList<ComparisonNode>(merged);
             Collections.sort(sorted, new Comparator<ComparisonNode>() {
                 @Override
                 public int compare(ComparisonNode o1, ComparisonNode o2) {
@@ -122,26 +127,27 @@ public class ConditionValidator {
         return result;
     }
 
+    /**
+     * 展平 AND 节点并将相邻的同表 MIN_UNIT 交给 {@link SameTableMinUnitProcessor}。
+     */
     private List<ConditionNode> mergeSameTableMinUnits(List<ConditionNode> nodes) {
-        Map<String, ConditionNode> minUnits = new HashMap<String, ConditionNode>();
+        Map<String, List<ConditionNode>> minUnitsByAlias = new HashMap<String, List<ConditionNode>>();
         List<ConditionNode> others = new ArrayList<ConditionNode>();
         for (ConditionNode node : nodes) {
             if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
                 String alias = node.getTableAlias();
-                if (minUnits.containsKey(alias)) {
-                    ConditionNode existing = minUnits.get(alias);
-                    List<ComparisonNode> merged = new ArrayList<ComparisonNode>(existing.getComparisons());
-                    merged.addAll(node.getComparisons());
-                    minUnits.put(alias, ConditionNode.minUnit(alias, node.getTableName(), merged));
-                } else {
-                    minUnits.put(alias, node);
+                if (!minUnitsByAlias.containsKey(alias)) {
+                    minUnitsByAlias.put(alias, new ArrayList<ConditionNode>());
                 }
+                minUnitsByAlias.get(alias).add(node);
             } else {
                 others.add(node);
             }
         }
         List<ConditionNode> result = new ArrayList<ConditionNode>(others);
-        result.addAll(minUnits.values());
+        for (Map.Entry<String, List<ConditionNode>> entry : minUnitsByAlias.entrySet()) {
+            result.addAll(SameTableMinUnitProcessor.process(entry.getValue(), columnConditionMerger));
+        }
         return result;
     }
 
@@ -159,6 +165,21 @@ public class ConditionValidator {
     private ConditionType analyzeNode(ConditionNode node) {
         if (node.getType() == ConditionNode.NodeType.AND) {
             boolean hasUnknown = false;
+            Map<String, List<ConditionNode>> sameTableUnits = new HashMap<String, List<ConditionNode>>();
+            for (ConditionNode child : node.getChildren()) {
+                if (child.getType() == ConditionNode.NodeType.MIN_UNIT) {
+                    String alias = child.getTableAlias();
+                    if (!sameTableUnits.containsKey(alias)) {
+                        sameTableUnits.put(alias, new ArrayList<ConditionNode>());
+                    }
+                    sameTableUnits.get(alias).add(child);
+                }
+            }
+            for (List<ConditionNode> units : sameTableUnits.values()) {
+                if (SameTableEtlMonthContradictionChecker.isContradictory(units, columnConditionMerger)) {
+                    return ConditionType.CONTRADICTION;
+                }
+            }
             for (ConditionNode child : node.getChildren()) {
                 ConditionType childType = analyzeNode(child);
                 if (childType == ConditionType.CONTRADICTION) {
@@ -202,6 +223,10 @@ public class ConditionValidator {
         if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
             return analyzeMinUnit(node);
         }
+        if (node.getType() == ConditionNode.NodeType.CROSS_TABLE
+                || node.getType() == ConditionNode.NodeType.RAW) {
+            return ConditionType.SATISFIABLE;
+        }
         return ConditionType.UNKNOWN;
     }
 
@@ -224,17 +249,47 @@ public class ConditionValidator {
         return ConditionType.SATISFIABLE;
     }
 
+    static boolean areEtlMonthConstraintsContradictory(List<ComparisonNode> comparisons) {
+        return new ConditionValidator().isContradictory(comparisons);
+    }
+    boolean isEtlMonthContradictory(List<ComparisonNode> comparisons) {
+        return isContradictory(comparisons);
+    }
+
+    /**
+     * 判断一组比较条件是否逻辑矛盾。
+     * <p>仅对<b>字面量</b>右操作数做静态分析；含子查询/函数表达式时跳过，避免误判。
+     */
     private boolean isContradictory(List<ComparisonNode> comparisons) {
+        List<ComparisonNode> literalComparisons = new ArrayList<ComparisonNode>();
+        for (ComparisonNode comparison : comparisons) {
+            if (ComparisonValueUtils.hasLiteralRhs(comparison)) {
+                literalComparisons.add(comparison);
+            }
+        }
+        if (literalComparisons.size() <= 1) {
+            return false;
+        }
+        return isLiteralContradictory(literalComparisons);
+    }
+
+    private boolean isLiteralContradictory(List<ComparisonNode> comparisons) {
         Set<String> eqValues = new HashSet<String>();
         Set<String> neValues = new HashSet<String>();
-        Double lower = null;
-        boolean lowerInclusive = false;
-        Double upper = null;
-        boolean upperInclusive = false;
+        RangeBound lower = new RangeBound();
+        RangeBound upper = new RangeBound();
 
         for (ComparisonNode comparison : comparisons) {
+            if (comparison.getOperator() == ComparisonOperator.BETWEEN) {
+                if (!ComparisonValueUtils.isValidClosedRange(comparison.getValue(), comparison.getBetweenUpper())) {
+                    return true;
+                }
+                lower.merge(comparison.getValue(), true);
+                upper.mergeUpper(comparison.getBetweenUpper(), true);
+                continue;
+            }
             if (comparison.getOperator() == ComparisonOperator.EQ) {
-                String value = stripQuote(comparison.getValue());
+                String value = ComparisonValueUtils.stripQuote(comparison.getRhsSql());
                 if (!eqValues.isEmpty() && !eqValues.contains(value)) {
                     return true;
                 }
@@ -243,36 +298,20 @@ public class ConditionValidator {
                     return true;
                 }
             } else if (comparison.getOperator() == ComparisonOperator.NE) {
-                neValues.add(stripQuote(comparison.getValue()));
+                neValues.add(ComparisonValueUtils.stripQuote(comparison.getRhsSql()));
             } else {
-                Double numeric = tryParseNumber(comparison.getValue());
-                if (numeric == null) {
-                    continue;
-                }
                 switch (comparison.getOperator()) {
                     case GT:
-                        if (lower == null || numeric > lower) {
-                            lower = numeric;
-                            lowerInclusive = false;
-                        }
+                        lower.merge(comparison.getValue(), false);
                         break;
                     case GE:
-                        if (lower == null || numeric > lower || (numeric.equals(lower) && !lowerInclusive)) {
-                            lower = numeric;
-                            lowerInclusive = true;
-                        }
+                        lower.merge(comparison.getValue(), true);
                         break;
                     case LT:
-                        if (upper == null || numeric < upper) {
-                            upper = numeric;
-                            upperInclusive = false;
-                        }
+                        upper.mergeUpper(comparison.getValue(), false);
                         break;
                     case LE:
-                        if (upper == null || numeric < upper || (numeric.equals(upper) && !upperInclusive)) {
-                            upper = numeric;
-                            upperInclusive = true;
-                        }
+                        upper.mergeUpper(comparison.getValue(), true);
                         break;
                     default:
                         break;
@@ -282,26 +321,80 @@ public class ConditionValidator {
 
         if (!eqValues.isEmpty()) {
             for (String eq : eqValues) {
-                Double numeric = tryParseNumber("'" + eq + "'");
-                if (numeric != null) {
-                    if (lower != null && (numeric < lower || (numeric.equals(lower) && !lowerInclusive))) {
-                        return true;
-                    }
-                    if (upper != null && (numeric > upper || (numeric.equals(upper) && !upperInclusive))) {
-                        return true;
-                    }
+                String quoted = "'" + eq + "'";
+                if (lower.isSet() && !lower.allowsLower(quoted)) {
+                    return true;
+                }
+                if (upper.isSet() && !upper.allowsUpper(quoted)) {
+                    return true;
                 }
             }
         }
-        if (lower != null && upper != null) {
-            if (lower > upper) {
-                return true;
-            }
-            if (lower.equals(upper) && !(lowerInclusive && upperInclusive)) {
-                return true;
-            }
+        if (lower.isSet() && upper.isSet()) {
+            return !ComparisonValueUtils.isValidOpenEndedRange(
+                    lower.value, lower.inclusive, upper.value, upper.inclusive);
         }
         return false;
+    }
+
+    private static final class RangeBound {
+        private String value;
+        private boolean inclusive;
+        private boolean isSet() {
+            return value != null;
+        }
+        private void merge(String candidate, boolean candidateInclusive) {
+            if (value == null) {
+                value = candidate;
+                inclusive = candidateInclusive;
+                return;
+            }
+            int cmp = ComparisonValueUtils.compareValues(candidate, value);
+            if (cmp > 0) {
+                value = candidate;
+                inclusive = candidateInclusive;
+            } else if (cmp == 0 && !candidateInclusive && inclusive) {
+                inclusive = false;
+            }
+        }
+        private void mergeUpper(String candidate, boolean candidateInclusive) {
+            if (value == null) {
+                value = candidate;
+                inclusive = candidateInclusive;
+                return;
+            }
+            int cmp = ComparisonValueUtils.compareValues(candidate, value);
+            if (cmp < 0) {
+                value = candidate;
+                inclusive = candidateInclusive;
+            } else if (cmp == 0 && !candidateInclusive && inclusive) {
+                inclusive = false;
+            }
+        }
+
+
+
+        private boolean allowsLower(String actual) {
+            int cmp = ComparisonValueUtils.compareValues(actual, value);
+            if (cmp > 0) {
+                return true;
+            }
+            if (cmp < 0) {
+                return false;
+            }
+            return inclusive;
+        }
+
+        private boolean allowsUpper(String actual) {
+            int cmp = ComparisonValueUtils.compareValues(actual, value);
+            if (cmp < 0) {
+                return true;
+            }
+            if (cmp > 0) {
+                return false;
+            }
+            return inclusive;
+        }
     }
 
     private boolean isTautology(List<ComparisonNode> comparisons) {
@@ -348,7 +441,13 @@ public class ConditionValidator {
 
     private String nodeSortKey(ConditionNode node) {
         if (node.getType() == ConditionNode.NodeType.MIN_UNIT) {
-            return "1_" + node.getTableAlias();
+            return "2_" + node.getTableAlias();
+        }
+        if (node.getType() == ConditionNode.NodeType.CROSS_TABLE) {
+            return "3_cross";
+        }
+        if (node.getType() == ConditionNode.NodeType.RAW) {
+            return "4_raw";
         }
         return "0_" + node.getType().name();
     }
@@ -365,6 +464,21 @@ public class ConditionValidator {
                 return "条件有效，可正常查询";
             default:
                 return "条件暂时无法判定，请补充更明确的条件";
+        }
+    }
+
+    public String buildMessage2(ConditionType type) {
+        switch (type) {
+            case SYNTAX_ERROR:
+                return "条件组合存在语法错误";
+            case CONTRADICTION:
+                return "条件组合存在逻辑矛盾，无法满足";
+            case TAUTOLOGY:
+                return "条件组合恒真，请缩小查询范围";
+            case SATISFIABLE:
+                return "";
+            default:
+                return "条件组合暂时无法判定，请补充更明确的条件";
         }
     }
 }

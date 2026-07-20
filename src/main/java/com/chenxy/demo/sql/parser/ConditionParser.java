@@ -1,10 +1,13 @@
 package com.chenxy.demo.sql.parser;
 
-import com.chenxy.demo.sql.model.ComparisonNode;
-import com.chenxy.demo.sql.model.ComparisonOperator;
-import com.chenxy.demo.sql.model.ConditionNode;
-import com.chenxy.demo.sql.model.TableInfo;
+
+import cn.hutool.json.JSONUtil;
+import com.chenxy.demo.sql.TokenType;
 import com.chenxy.demo.sql.meta.TableMetaRegistry;
+import com.chenxy.demo.sql.model.*;
+import com.chenxy.demo.sql.validator.ColumnConditionMerger;
+import com.chenxy.demo.sql.validator.SameTableMinUnitProcessor;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -12,11 +15,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 条件表达式解析器
+ * 条件表达式解析器：将 condition 字符串解析为 {@link com.chenxy.demo.sql.model.ConditionNode} AST。
+ *
+ * <p>解析分两阶段：
+ * <ol>
+ *   <li><b>语法分析</b>：tokenize → 递归下降（OR &lt; AND &lt; 比较表达式）</li>
+ *   <li><b>MIN_UNIT 归并</b>：{@link #groupMinimumUnits} 将同表条件聚合为 MIN_UNIT，
+ *       并调用 {@link com.chenxy.demo.sql.validator.SameTableMinUnitProcessor} 处理同表多单元</li>
+ * </ol>
+ *
+ * <p>支持的右操作数类型：字面量、字段引用（跨表）、函数/子查询表达式。
  */
+@Slf4j
 public class ConditionParser {
 
     private final TableMetaRegistry registry;
+    private final ExpressionSanitizer sanitizer;
     private final String etlMonthColumn;
     private List<Token> tokens;
     private int pos;
@@ -27,6 +41,7 @@ public class ConditionParser {
 
     public ConditionParser(TableMetaRegistry registry, String etlMonthColumn) {
         this.registry = registry;
+        this.sanitizer = new ExpressionSanitizer();
         this.etlMonthColumn = etlMonthColumn;
     }
 
@@ -71,41 +86,192 @@ public class ConditionParser {
             expect(TokenType.RPAREN, "缺少右括号");
             return inner;
         }
-        return ConditionNode.comparison(parseComparison());
+        return parsePredicate();
     }
 
-    private ComparisonNode parseComparison() {
-        FieldRef fieldRef = parseFieldRef();
-        if (matchKeyword("NOT")) {
-            expectKeyword("IN");
-            expect(TokenType.LPAREN, "IN 操作符缺少左括号");
-            String values = parseInValues();
-            expect(TokenType.RPAREN, "IN 操作符缺少右括号");
-            ComparisonNode node = new ComparisonNode(fieldRef.alias, fieldRef.column, ComparisonOperator.NE, values);
-            node.setInValues(true);
-            registry.resolve(fieldRef.alias, fieldRef.column);
-            return node;
+    private ConditionNode parsePredicate() {
+        if (isExpressionStart()) {
+            String leftExpr = sanitizer.sanitizeExpression(scanExpression());
+            return parseExpressionPredicate(leftExpr);
         }
+
+        FieldRef leftField = parseFieldRef();
+        registry.resolve(leftField.alias, leftField.column);
+
+        if (matchKeyword("IS")) {
+            ComparisonOperator op = matchKeyword("NOT")
+                    ? ComparisonOperator.IS_NOT_NULL
+                    : ComparisonOperator.IS_NULL;
+            if (op == ComparisonOperator.IS_NULL) {
+                expectKeyword("NULL");
+            } else {
+                expectKeyword("NULL");
+            }
+            ComparisonNode comparison = buildFieldComparison(leftField, op, null);
+            return wrapLocalComparison(comparison);
+        }
+
+        if (matchKeyword("NOT")) {
+            if (matchKeyword("LIKE")) {
+                String value = parseLiteralOrExpression();
+                ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.NOT_LIKE, value);
+                comparison.setRightOperandType(isExpressionToken(value) ? OperandType.EXPRESSION : OperandType.LITERAL);
+                if (comparison.getRightOperandType() == OperandType.EXPRESSION) {
+                    comparison.setRightExpression(value);
+                }
+                return wrapLocalComparison(comparison);
+            }
+
+            if (matchKeyword("IN")) {
+                String values = parseInContent();
+                ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.NOT_IN, values);
+                comparison.setInValues(true);
+                applyInOperand(comparison, values);
+                return wrapLocalComparison(comparison);
+            }
+            throw new IllegalArgumentException("NOT 后应为 LIKE 或 IN，实际为: " + current().text);
+        }
+
+        if (matchKeyword("LIKE")) {
+            String value = parseLiteralOrExpression();
+            ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.LIKE, value);
+            applyRightOperand(comparison, value);
+            return wrapLocalComparison(comparison);
+        }
+
         if (matchKeyword("IN")) {
-            expect(TokenType.LPAREN, "IN 操作符缺少左括号");
-            String values = parseInValues();
-            expect(TokenType.RPAREN, "IN 操作符缺少右括号");
-            ComparisonNode node = new ComparisonNode(fieldRef.alias, fieldRef.column, ComparisonOperator.IN, values);
-            node.setInValues(true);
-            registry.resolve(fieldRef.alias, fieldRef.column);
-            return node;
+            String content = parseInContent();
+            ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.IN, content);
+            comparison.setInValues(true);
+            applyInOperand(comparison, content);
+            return wrapLocalComparison(comparison);
+        }
+
+        if (matchKeyword("BETWEEN")) {
+            String lower = parseLiteralOrExpression();
+            if (!match(TokenType.AND)) {
+                throw new IllegalArgumentException("BETWEEN 缺少 AND 关键字");
+            }
+            String upper = parseLiteralOrExpression();
+            ComparisonNode comparison = buildFieldComparison(leftField, ComparisonOperator.BETWEEN, lower);
+            comparison.setBetweenUpper(upper);
+            return wrapLocalComparison(comparison);
+        }
+
+        ComparisonOperator operator = parseOperator();
+        return parseBinaryPredicate(leftField, operator);
+    }
+
+    private ConditionNode parseExpressionPredicate(String leftExpr) {
+        if (matchKeyword("IS")) {
+            ComparisonOperator op = matchKeyword("NOT")
+                    ? ComparisonOperator.IS_NOT_NULL
+                    : ComparisonOperator.IS_NULL;
+            expectKeyword("NULL");
+            return ConditionNode.raw(leftExpr + " " + op.getSymbol());
+        }
+        if (matchKeyword("NOT")) {
+            if (matchKeyword("LIKE")) {
+                String rhs = parseLiteralOrExpression();
+                return ConditionNode.raw(leftExpr + " NOT LIKE " + rhs);
+            }
+            if (matchKeyword("IN")) {
+                String content = parseInContent();
+                return ConditionNode.raw(leftExpr + " NOT IN " + formatInParentheses(content));
+            }
         }
         if (matchKeyword("LIKE")) {
-            String value = parseValueToken();
-            ComparisonNode node = new ComparisonNode(fieldRef.alias, fieldRef.column, ComparisonOperator.LIKE, value);
-            registry.resolve(fieldRef.alias, fieldRef.column);
-            return node;
+            String rhs = parseLiteralOrExpression();
+            return ConditionNode.raw(leftExpr + " LIKE " + rhs);
+        }
+        if (matchKeyword("IN")) {
+            String content = parseInContent();
+            return ConditionNode.raw(leftExpr + " IN " + formatInParentheses(content));
+        }
+        if (matchKeyword("BETWEEN")) {
+            String lower = parseLiteralOrExpression();
+            if (!match(TokenType.AND)) {
+                throw new IllegalArgumentException("BETWEEN 缺少 AND 关键字");
+            }
+            String upper = parseLiteralOrExpression();
+            return ConditionNode.raw(leftExpr + " BETWEEN " + lower + " AND " + upper);
         }
         ComparisonOperator operator = parseOperator();
-        String value = parseValueToken();
-        ComparisonNode node = new ComparisonNode(fieldRef.alias, fieldRef.column, operator, value);
-        registry.resolve(fieldRef.alias, fieldRef.column);
-        return node;
+        RightOperand rhs = parseRightOperand();
+        if (rhs.type == OperandType.FIELD) {
+            registry.resolve(rhs.field.alias, rhs.field.column);
+            ComparisonNode comparison = new ComparisonNode();
+            comparison.setLeftExpression(leftExpr);
+            comparison.setOperator(operator);
+            comparison.setRightOperandType(OperandType.FIELD);
+            comparison.setRightTableAlias(rhs.field.alias);
+            comparison.setRightColumn(rhs.field.column);
+            fillCrossTableLeftRef(comparison, leftExpr);
+            return ConditionNode.crossTable(comparison);
+        }
+        String rhsSql = rhs.expression != null ? rhs.expression : rhs.literal;
+        return ConditionNode.raw(leftExpr + " " + operator.getSymbol() + " " + rhsSql);
+    }
+
+    private ConditionNode parseBinaryPredicate(FieldRef leftField, ComparisonOperator operator) {
+        RightOperand rhs = parseRightOperand();
+        if (rhs.type == OperandType.FIELD) {
+            registry.resolve(rhs.field.alias, rhs.field.column);
+            ComparisonNode comparison = buildFieldComparison(leftField, operator, null);
+            comparison.setRightOperandType(OperandType.FIELD);
+            comparison.setRightTableAlias(rhs.field.alias);
+            comparison.setRightColumn(rhs.field.column);
+            return ConditionNode.crossTable(comparison);
+        }
+        ComparisonNode comparison = buildFieldComparison(leftField, operator, rhs.literal);
+        if (rhs.type == OperandType.EXPRESSION) {
+            comparison.setRightOperandType(OperandType.EXPRESSION);
+            comparison.setRightExpression(rhs.expression);
+        }
+        return wrapLocalComparison(comparison);
+    }
+
+    private void fillCrossTableLeftRef(ComparisonNode comparison, String leftExpr) {
+        FieldRef ref = extractSingleFieldRef(leftExpr);
+        if (ref != null) {
+            registry.resolve(ref.alias, ref.column);
+            comparison.setTableAlias(ref.alias);
+            comparison.setColumn(ref.column);
+        }
+    }
+
+    private FieldRef extractSingleFieldRef(String expression) {
+        String trimmed = expression.trim();
+        int dot = trimmed.indexOf('.');
+        if (dot <= 0) {
+            return null;
+        }
+        String alias = trimmed.substring(0, dot).trim();
+        String column = trimmed.substring(dot + 1).trim();
+        if (alias.isEmpty() || column.isEmpty() || column.contains(" ") || column.contains("(")) {
+            return null;
+        }
+        return new FieldRef(alias, column);
+    }
+
+    private ConditionNode wrapLocalComparison(ComparisonNode comparison) {
+        if (comparison.isExpressionPredicate()) {
+            return ConditionNode.raw(comparison.toSqlFragment(comparison.getTableAlias()));
+        }
+        return ConditionNode.comparison(comparison);
+    }
+
+    private ComparisonNode buildFieldComparison(FieldRef field, ComparisonOperator operator, String value) {
+        TableInfo info = registry.resolve(field.alias, field.column);
+        ComparisonNode comparison = new ComparisonNode(info.getAlias(), field.column, operator, value);
+        return comparison;
+    }
+
+    private void applyRightOperand(ComparisonNode comparison, String raw) {
+        if (isExpressionToken(raw)) {
+            comparison.setRightOperandType(OperandType.EXPRESSION);
+            comparison.setRightExpression(raw);
+        }
     }
 
     private ComparisonOperator parseOperator() {
@@ -117,11 +283,64 @@ public class ConditionParser {
         throw new IllegalArgumentException("期望操作符，实际为: " + token.text);
     }
 
+    private RightOperand parseRightOperand() {
+        if (current().type == TokenType.IDENT && isFieldRefAhead()) {
+            FieldRef field = parseFieldRef();
+            return RightOperand.field(field);
+        }
+        if (isExpressionStart()) {
+            String expr = sanitizer.sanitizeRhsOperand(scanExpression());
+            return RightOperand.expression(expr);
+        }
+        return RightOperand.literal(parseLiteralOrExpression());
+    }
+
+    private String parseLiteralOrExpression() {
+        if (isExpressionStart()) {
+            return sanitizer.sanitizeRhsOperand(scanExpression());
+        }
+        return parseValueToken();
+    }
+
+    private void applyInOperand(ComparisonNode comparison, String content) {
+        if (content.regionMatches(true, 0, "SELECT", 0, 6)) {
+            comparison.setRightOperandType(OperandType.EXPRESSION);
+            comparison.setRightExpression(content);
+        }
+    }
+    private String formatInParentheses(String content) {
+        if (content == null || content.trim().isEmpty()) {
+            return "()";
+        }
+        String trimmed = content.trim();
+        if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+            return trimmed;
+        }
+        return "(" + trimmed + ")";
+    }
+    /**
+     * 解析 IN / NOT IN 右操作数，输入可带或不带括号，输出 SQL 时统一补括号。
+     */
+    private String parseInContent() {
+        if (match(TokenType.LPAREN)) {
+            String content = parseInInnerContent();
+            expect(TokenType.RPAREN, "IN 操作符缺少右括号");
+            return content;
+        }
+        return parseInInnerContent();
+    }
+    private String parseInInnerContent() {
+        if (current().type == TokenType.IDENT && "SELECT".equalsIgnoreCase(current().text)) {
+            return scanSelectSubquery();
+        }
+        return parseInValues();
+    }
+
     private String parseInValues() {
         StringBuilder sb = new StringBuilder();
-        sb.append(parseValueToken());
+        sb.append(parseLiteralOrExpression());
         while (match(TokenType.COMMA)) {
-            sb.append(", ").append(parseValueToken());
+            sb.append(", ").append(parseLiteralOrExpression());
         }
         return sb.toString();
     }
@@ -144,9 +363,180 @@ public class ConditionParser {
         return new FieldRef(null, first.text);
     }
 
+    private boolean isFieldRefAhead() {
+        if (current().type != TokenType.IDENT) {
+            return false;
+        }
+        if (pos + 1 >= tokens.size()) {
+            return false;
+        }
+        if (tokens.get(pos + 1).type == TokenType.DOT) {
+            if (pos + 2 >= tokens.size()) {
+                return false;
+            }
+            Token afterColumn = tokens.get(pos + 3);
+            return afterColumn.type != TokenType.LPAREN;
+        }
+        return tokens.get(pos + 1).type != TokenType.LPAREN;
+    }
+
+    private boolean isExpressionStart() {
+        Token token = current();
+        if (token.type == TokenType.LPAREN) {
+            return true;
+        }
+        if (token.type == TokenType.IDENT && pos + 1 < tokens.size()
+                && tokens.get(pos + 1).type == TokenType.LPAREN) {
+            return true;
+        }
+        return false;
+    }
+
+    private String scanSelectSubquery() {
+        StringBuilder sb = new StringBuilder();
+        int parenDepth = 0;
+        while (pos < tokens.size()) {
+            Token token = current();
+            if (token.type == TokenType.EOF) {
+                throw new IllegalArgumentException("子查询未闭合");
+            }
+            if (token.type == TokenType.LPAREN) {
+                parenDepth++;
+            }
+            if (token.type == TokenType.RPAREN) {
+                if (parenDepth == 0) {
+                    break;
+                }
+                parenDepth--;
+            }
+            appendTokenText(sb, token);
+            pos++;
+        }
+        return sanitizer.sanitizeSubquery(sb.toString());
+    }
+
+    private void appendTokenText(StringBuilder sb, Token token) {
+        if (token.type == TokenType.DOT) {
+            sb.append(".");
+            return;
+        }
+        if (token.type == TokenType.LPAREN) {
+            sb.append("(");
+            return;
+        }
+        if (token.type == TokenType.RPAREN) {
+            sb.append(")");
+            return;
+        }
+        if (sb.length() > 0 && !endsWithOpenDelimiter(sb)) {
+            sb.append(" ");
+        }
+        sb.append(token.text);
+    }
+
+    private boolean endsWithOpenDelimiter(StringBuilder sb) {
+        if (sb.length() == 0) {
+            return true;
+        }
+        char last = sb.charAt(sb.length() - 1);
+        return last == '(' || last == ',' || last == '.';
+    }
+
+    private String scanExpression() {
+        if (current().type == TokenType.LPAREN) {
+            return scanBalancedContent('(', ')');
+        }
+        return scanFunctionCall();
+    }
+
+    private String scanFunctionCall() {
+        StringBuilder sb = new StringBuilder();
+        Token ident = expect(TokenType.IDENT, "期望函数名或表达式");
+        sb.append(ident.text);
+        if (match(TokenType.LPAREN)) {
+            sb.append("(").append(scanFunctionArguments()).append(")");
+        }
+        return sanitizer.sanitizeExpression(sb.toString());
+    }
+
+    private String scanFunctionArguments() {
+        StringBuilder sb = new StringBuilder();
+        int depth = 0;
+        while (pos < tokens.size()) {
+            Token token = current();
+            if (token.type == TokenType.EOF) {
+                break;
+            }
+            if (token.type == TokenType.LPAREN) {
+                depth++;
+            }
+            if (token.type == TokenType.RPAREN) {
+                if (depth == 0) {
+                    pos++;
+                    break;
+                }
+                depth--;
+            }
+            appendTokenText(sb, token);
+            pos++;
+        }
+        return sb.toString().trim();
+    }
+
+    private String scanBalancedContent(char openChar, char closeChar) {
+        expect(TokenType.LPAREN, "缺少左括号");
+        StringBuilder sb = new StringBuilder("(");
+        int depth = 1;
+        while (pos < tokens.size() && depth > 0) {
+            Token token = current();
+            if (token.type == TokenType.EOF) {
+                throw new IllegalArgumentException("括号未闭合");
+            }
+            if ("(".equals(token.text)) {
+                depth++;
+            } else if (")".equals(token.text)) {
+                depth--;
+                if (depth == 0) {
+                    sb.append(")");
+                    pos++;
+                    break;
+                }
+            }
+            if (depth > 0) {
+                appendTokenText(sb, token);
+            }
+            if (depth > 0) {
+                pos++;
+            }
+        }
+        return sb.toString();
+    }
+
+    private boolean isExpressionToken(String token) {
+        if (token == null) {
+            return false;
+        }
+        String trimmed = token.trim();
+        return trimmed.contains("(") || trimmed.regionMatches(true, 0, "SELECT", 0, 6);
+    }
+
+    /**
+     * 第二阶段：将语法树归并为 MIN_UNIT。
+     * <p>同一 AND 下的同表比较会合并；括号分组会保留为独立的 MIN_UNIT（用于多快照 JOIN）。
+     */
     private ConditionNode groupMinimumUnits(ConditionNode node) {
         if (node.getType() == ConditionNode.NodeType.AND) {
-            return mergeAndChildren(node.flattenSameType());
+            if (canMergeAsSingleMinUnit(node)) {
+                return mergeAndChildren(node.getChildren());
+            }
+            if (shouldFlattenNestedAnd(node)) {
+                return mergeAndChildren(flattenMergeableAndChildren(node));
+            }
+            List<ConditionNode> groupedChildren = new ArrayList<ConditionNode>();
+            for (ConditionNode child : node.getChildren()) {
+                groupedChildren.add(groupMinimumUnits(child));
+            }
+            return mergeAndChildren(groupedChildren);
         }
         if (node.getType() == ConditionNode.NodeType.OR) {
             List<ConditionNode> children = new ArrayList<ConditionNode>();
@@ -160,40 +550,96 @@ public class ConditionParser {
         }
         return node;
     }
+    private boolean canMergeAsSingleMinUnit(ConditionNode andNode) {
+        for (ConditionNode child : andNode.getChildren()) {
+            if (child.getType() != ConditionNode.NodeType.COMPARISON
+                    && child.getType() != ConditionNode.NodeType.RAW) {
+                return false;
+            }
+        }
+        return true;
+    }
 
+    private boolean shouldFlattenNestedAnd(ConditionNode andNode) {
+        boolean hasAndChild = false;
+        boolean hasLeafChild = false;
+        for (ConditionNode child : andNode.getChildren()) {
+            if (child.getType() == ConditionNode.NodeType.AND) {
+                hasAndChild = true;
+            } else if (child.getType() == ConditionNode.NodeType.COMPARISON
+                    || child.getType() == ConditionNode.NodeType.RAW) {
+                hasLeafChild = true;
+            } else {
+                return false;
+            }
+        }
+        return hasAndChild && hasLeafChild;
+    }
+    private List<ConditionNode> flattenMergeableAndChildren(ConditionNode andNode) {
+        List<ConditionNode> result = new ArrayList<ConditionNode>();
+        for (ConditionNode child : andNode.getChildren()) {
+            if (child.getType() == ConditionNode.NodeType.AND) {
+                result.addAll(flattenMergeableAndChildren(child));
+            } else {
+                result.add(child);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 合并同一 AND 层级的子节点：按表别名聚合比较条件，生成 MIN_UNIT 列表。
+     * <p>同表多个 MIN_UNIT 会交给 {@link com.chenxy.demo.sql.validator.SameTableMinUnitProcessor} 处理。
+     */
     private ConditionNode mergeAndChildren(List<ConditionNode> children) {
+        Map<String, List<ConditionNode>> tableMinUnits = new LinkedHashMap<String, List<ConditionNode>>();
         Map<String, List<ComparisonNode>> tableComparisons = new LinkedHashMap<String, List<ComparisonNode>>();
         Map<String, String> aliasTableNames = new LinkedHashMap<String, String>();
         List<ConditionNode> others = new ArrayList<ConditionNode>();
 
         for (ConditionNode child : children) {
             if (child.getType() == ConditionNode.NodeType.MIN_UNIT) {
-                String alias = child.getTableAlias();
-                if (!tableComparisons.containsKey(alias)) {
-                    tableComparisons.put(alias, new ArrayList<ComparisonNode>());
-                }
-                tableComparisons.get(alias).addAll(child.getComparisons());
-                aliasTableNames.put(alias, child.getTableName());
+                addTableMinUnit(tableMinUnits, aliasTableNames, child);
             } else if (child.getType() == ConditionNode.NodeType.COMPARISON) {
-                ComparisonNode comparison = child.getComparison();
-                TableInfo info = registry.resolve(comparison.getTableAlias(), comparison.getColumn());
-                String alias = info.getAlias();
-                if (!tableComparisons.containsKey(alias)) {
-                    tableComparisons.put(alias, new ArrayList<ComparisonNode>());
-                }
-                comparison.setTableAlias(alias);
-                tableComparisons.get(alias).add(comparison);
-                aliasTableNames.put(alias, info.getTableName());
+                addTableComparison(tableComparisons, aliasTableNames, child.getComparison());
+            } else if (child.getType() == ConditionNode.NodeType.CROSS_TABLE
+                    || child.getType() == ConditionNode.NodeType.RAW) {
+                others.add(child);
             } else if (child.getType() == ConditionNode.NodeType.OR) {
                 others.add(groupMinimumUnits(child));
+            } else if (child.getType() == ConditionNode.NodeType.AND) {
+                ConditionNode groupedChild = groupMinimumUnits(child);
+                distributeAndChild(groupedChild, tableMinUnits, tableComparisons, aliasTableNames, others);
             } else {
                 others.add(child);
             }
         }
 
-        List<ConditionNode> merged = new ArrayList<ConditionNode>(others);
         for (Map.Entry<String, List<ComparisonNode>> entry : tableComparisons.entrySet()) {
-            merged.add(buildMinUnit(entry.getKey(), aliasTableNames.get(entry.getKey()), entry.getValue()));
+            String alias = entry.getKey();
+            String tableName = aliasTableNames.get(alias);
+            if (tableName == null || tableName.trim().isEmpty()) {
+                tableName = registry.getTableName(alias);
+            }
+            addTableMinUnit(tableMinUnits, aliasTableNames,
+                    buildMinUnit(alias, tableName, entry.getValue()));
+        }
+        List<ConditionNode> merged = new ArrayList<ConditionNode>(others);
+        ColumnConditionMerger merger = new ColumnConditionMerger(etlMonthColumn);
+        for (Map.Entry<String, List<ConditionNode>> entry : tableMinUnits.entrySet()) {
+            String alias = entry.getKey();
+            List<ConditionNode> units = SameTableMinUnitProcessor.process(entry.getValue(), merger);
+            for (ConditionNode unit : units) {
+                String tableName = unit.getTableName();
+                if (tableName == null || tableName.trim().isEmpty()) {
+                    tableName = aliasTableNames.get(alias);
+                }
+                if (tableName == null || tableName.trim().isEmpty()) {
+                    tableName = registry.getTableName(alias);
+                }
+                List<ComparisonNode> mergedComparisons = merger.merge(unit.getComparisons());
+                merged.add(buildMinUnit(alias, tableName, mergedComparisons));
+            }
         }
         if (merged.size() == 1) {
             return merged.get(0);
@@ -201,7 +647,59 @@ public class ConditionParser {
         return ConditionNode.and(merged);
     }
 
+    private void addTableComparison(Map<String, List<ComparisonNode>> tableComparisons,
+                                    Map<String, String> aliasTableNames,
+                                    ComparisonNode comparison) {
+        if (comparison.isCrossTable()) {
+            throw new IllegalArgumentException("跨表比较不能作为单表最小条件单元的一部分");
+        }
+        TableInfo info = registry.resolve(comparison.getTableAlias(), comparison.getColumn());
+        String alias = info.getAlias();
+        comparison.setTableAlias(alias);
+        if (!tableComparisons.containsKey(alias)) {
+            tableComparisons.put(alias, new ArrayList<ComparisonNode>());
+        }
+        tableComparisons.get(alias).add(comparison);
+        aliasTableNames.put(alias, info.getTableName());
+    }
+    private void addTableMinUnit(Map<String, List<ConditionNode>> tableMinUnits,
+                                 Map<String, String> aliasTableNames,
+                                 ConditionNode minUnit) {
+        String alias = minUnit.getTableAlias();
+        if (!tableMinUnits.containsKey(alias)) {
+            tableMinUnits.put(alias, new ArrayList<ConditionNode>());
+        }
+        tableMinUnits.get(alias).add(minUnit);
+        if (minUnit.getTableName() != null && !minUnit.getTableName().trim().isEmpty()) {
+            aliasTableNames.put(alias, minUnit.getTableName());
+        } else if (!aliasTableNames.containsKey(alias)) {
+            aliasTableNames.put(alias, registry.getTableName(alias));
+        }
+    }
+
+    private void distributeAndChild(ConditionNode child,
+                                    Map<String, List<ConditionNode>> tableMinUnits,
+                                    Map<String, List<ComparisonNode>> tableComparisons,
+                                    Map<String, String> aliasTableNames,
+                                    List<ConditionNode> others) {
+        if (child.getType() == ConditionNode.NodeType.MIN_UNIT) {
+            addTableMinUnit(tableMinUnits, aliasTableNames, child);
+        } else if (child.getType() == ConditionNode.NodeType.COMPARISON) {
+            addTableComparison(tableComparisons, aliasTableNames, child.getComparison());
+        } else if (child.getType() == ConditionNode.NodeType.AND) {
+            for (ConditionNode grand : child.getChildren()) {
+                distributeAndChild(grand, tableMinUnits, tableComparisons, aliasTableNames, others);
+            }
+        } else {
+            others.add(child);
+        }
+    }
+
+
     private ConditionNode wrapSingleComparison(ComparisonNode comparison) {
+        if (comparison.isCrossTable()) {
+            return ConditionNode.crossTable(comparison);
+        }
         TableInfo info = registry.resolve(comparison.getTableAlias(), comparison.getColumn());
         comparison.setTableAlias(info.getAlias());
         List<ComparisonNode> list = new ArrayList<ComparisonNode>();
@@ -209,18 +707,22 @@ public class ConditionParser {
         return buildMinUnit(info.getAlias(), info.getTableName(), list);
     }
 
+    /**
+     * 构造 MIN_UNIT 并校验：每个最小单元必须包含 etl_month 条件（业务字段可选）。
+     */
     private ConditionNode buildMinUnit(String alias, String tableName, List<ComparisonNode> comparisons) {
+        if (tableName == null || tableName.trim().isEmpty()) {
+            tableName = registry.getTableName(alias);
+        }
         boolean hasEtlMonth = false;
-        boolean hasBusiness = false;
         for (ComparisonNode comparison : comparisons) {
             if (etlMonthColumn.equalsIgnoreCase(comparison.getColumn())) {
                 hasEtlMonth = true;
-            } else {
-                hasBusiness = true;
+                break;
             }
         }
-        if (!hasEtlMonth || !hasBusiness) {
-            throw new IllegalArgumentException("最小查询条件必须同时包含 etl_month 和业务字段，表别名: " + alias);
+        if (!hasEtlMonth) {
+            throw new IllegalArgumentException("最小查询条件必须包含 etl_month，表别名: " + alias);
         }
         return ConditionNode.minUnit(alias, tableName, comparisons);
     }
@@ -285,7 +787,7 @@ public class ConditionParser {
                 }
                 continue;
             }
-            if (Character.isDigit(c) || c == '-') {
+            if (Character.isDigit(c) || (c == '-' && i + 1 < input.length() && Character.isDigit(input.charAt(i + 1)))) {
                 int start = i;
                 i++;
                 while (i < input.length() && (Character.isDigit(input.charAt(i)) || input.charAt(i) == '.')) {
@@ -346,6 +848,7 @@ public class ConditionParser {
     private Token expect(TokenType type, String message) {
         Token token = current();
         if (token.type != type) {
+            log.error("条件组合解析异常，expect，token：{}", JSONUtil.toJsonStr(token));
             throw new IllegalArgumentException(message + "，实际为: " + token.text);
         }
         pos++;
@@ -366,9 +869,32 @@ public class ConditionParser {
         }
     }
 
-    private enum TokenType {
-        IDENT, STRING, NUMBER, OPERATOR, AND, OR, LPAREN, RPAREN, DOT, COMMA, EOF
+    private static class RightOperand {
+        private final OperandType type;
+        private final FieldRef field;
+        private final String literal;
+        private final String expression;
+
+        private RightOperand(OperandType type, FieldRef field, String literal, String expression) {
+            this.type = type;
+            this.field = field;
+            this.literal = literal;
+            this.expression = expression;
+        }
+
+        static RightOperand field(FieldRef field) {
+            return new RightOperand(OperandType.FIELD, field, null, null);
+        }
+
+        static RightOperand literal(String literal) {
+            return new RightOperand(OperandType.LITERAL, null, literal, null);
+        }
+
+        static RightOperand expression(String expression) {
+            return new RightOperand(OperandType.EXPRESSION, null, null, expression);
+        }
     }
+
 
     private static class Token {
         private final TokenType type;

@@ -1,19 +1,25 @@
 package com.chenxy.demo.sql;
 
+
 import com.chenxy.demo.sql.builder.SqlQueryBuilder;
-import com.chenxy.demo.sql.model.ConditionNode;
-import com.chenxy.demo.sql.model.ConditionType;
-import com.chenxy.demo.sql.model.SqlBuildResult;
-import com.chenxy.demo.sql.model.SqlQueryConfig;
-import com.chenxy.demo.sql.model.TableInfo;
-import com.chenxy.demo.sql.model.ValidationResult;
+import com.chenxy.demo.sql.model.*;
 import com.chenxy.demo.sql.parser.ConditionParser;
 import com.chenxy.demo.sql.validator.ConditionValidator;
 
 import java.util.List;
 
 /**
- * SQL 查询组装入口服务
+ * SQL 查询组装入口服务。
+ *
+ * <p>处理流水线（三步）：
+ * <pre>
+ * condition 字符串
+ *   → {@link com.chenxy.demo.sql.parser.ConditionParser#parse}      解析为条件 AST
+ *   → {@link com.chenxy.demo.sql.validator.ConditionValidator}    校验 & 优化
+ *   → {@link com.chenxy.demo.sql.builder.SqlQueryBuilder}         生成 count/query SQL
+ * </pre>
+ *
+ * <p>设计文档：{@code docs/sql-query-builder.md}
  */
 public class SqlQueryService {
 
@@ -32,21 +38,24 @@ public class SqlQueryService {
     }
 
     /**
-     * 解析、校验并组装 count 与 query 两条 SQL
+     * 解析、校验并组装 count 与 query 两条 SQL。
+     *
+     * <p>当校验结果为矛盾、恒真或语法错误时，{@code countSql}/{@code querySql} 为 null。
      */
     public SqlBuildResult build(String condition) {
         ConditionNode parsed = parser.parse(condition);
         ValidationResult validationResult = validator.validate(parsed);
         if (!validationResult.isValid()) {
-            return new SqlBuildResult(validationResult, null, null);
+            return new SqlBuildResult(validationResult, null, null, null);
         }
         ConditionNode optimized = validationResult.getOptimizedCondition();
         if (validationResult.getConditionType() == ConditionType.TAUTOLOGY) {
-            return new SqlBuildResult(validationResult, null, null);
+            return new SqlBuildResult(validationResult, null, null, null);
         }
         String countSql = builder.buildCountSql(optimized);
         String querySql = builder.buildQuerySql(optimized);
-        return new SqlBuildResult(validationResult, countSql, querySql);
+        List<String> buildSelectList = builder.buildSelectList(optimized);
+        return new SqlBuildResult(validationResult, countSql, querySql, buildSelectList);
     }
 
     /**
