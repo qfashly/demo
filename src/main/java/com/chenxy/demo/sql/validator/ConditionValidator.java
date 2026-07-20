@@ -2,6 +2,7 @@ package com.chenxy.demo.sql.validator;
 
 
 import com.chenxy.demo.sql.model.*;
+import com.chenxy.demo.sql.optimizer.SqlQueryOptimizer;
 
 import java.util.*;
 
@@ -38,7 +39,8 @@ public class ConditionValidator {
 
     public ConditionNode optimize(ConditionNode root) {
         ConditionNode normalized = normalize(root);
-        return reorder(normalized);
+        ConditionNode sqlOptimized = SqlQueryOptimizer.optimize(normalized, columnConditionMerger);
+        return reorder(sqlOptimized);
     }
 
     private ConditionNode normalize(ConditionNode node) {

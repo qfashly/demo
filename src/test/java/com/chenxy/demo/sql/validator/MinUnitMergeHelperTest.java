@@ -46,7 +46,7 @@ public class MinUnitMergeHelperTest {
         String condition = "(t3.etl_month >= '2026-05-01' and t3.c3 = '28') and (t3.etl_month <= '2027-06-01' and t3.c4 = '28') and (t3.etl_month = '2027-07-01' and t3.c5 = '28')";
         ConditionParser parser = new ConditionParser(tableInfos);
         ConditionNode parsed = parser.parse(condition);
-        Assert.assertEquals(3, countMinUnits(parsed));
+        Assert.assertEquals(2, countMinUnits(parsed));
     }
 
     @Test

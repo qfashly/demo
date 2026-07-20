@@ -102,6 +102,18 @@ join (
 
 顶层或分支内的 `OR` 不展开为多个主查询，而是在单个 jtb 内用 **UNION** 合并分支子查询（详见 `SqlQueryBuilder.buildUnionJoinUnit`）。
 
+### 6. SQL 结构优化（`SqlQueryOptimizer`）
+
+校验通过后、生成 SQL 前，对条件 AST 做结构优化：
+
+| 优化项 | 说明 |
+|--------|------|
+| 同表 MIN_UNIT 合并 | etl_month 兼容的多个 MIN_UNIT 合并为一个 jtb（如 `<= '2026-07-01'` + `>= '2026-03-01'`） |
+
+**不合并**的情况：etl_month 矛盾（如 `= '2026-07-01'` 与 `>= '2026-08-01'`）→ 返回 `CONTRADICTION`。
+
+实现类：`optimizer.CompatibleMinUnitMergeOptimizer`（基于 `MinUnitMergeHelper`）。
+
 ## 包结构
 
 ```
@@ -116,7 +128,9 @@ com.chenxy.demo.sql
 │   ├── SameTableMinUnitProcessor    # 同表多 MIN_UNIT 合并策略
 │   ├── SameTableEtlMonthContradictionChecker
 │   └── ComparisonValueUtils         # 字面量比较工具
-├── builder/
+├── optimizer/
+│   ├── SqlQueryOptimizer              # SQL 结构优化入口
+│   └── CompatibleMinUnitMergeOptimizer # 合并 etl_month 兼容的同表 MIN_UNIT
 │   └── SqlQueryBuilder      # AST → SQL
 ├── meta/
 │   └── TableMetaRegistry    # tableInfos 元数据索引

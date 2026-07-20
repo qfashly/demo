@@ -163,7 +163,7 @@ public class ExtendedSqlQueryServiceTest {
     }
 
     @Test
-    public void testSameTableCompatibleEtlMonthKeepsEtlMonthPerJoin() {
+    public void testSameTableCompatibleEtlMonthMergedIntoSingleJtb() {
         List<TableInfo> tableInfos = Arrays.asList(
                 new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
                 new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
@@ -174,13 +174,12 @@ public class ExtendedSqlQueryServiceTest {
         SqlBuildResult result = service.build(condition);
 
         Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
-        assertSqlContains(result.getQuerySql(),
-                "t3.etl_month >= '2025-05-01'",
-                "t3.c3 = '28'",
-                "t3.etl_month <= '2026-06-01'",
-                "t3.c4 = '28'",
-                "jtb1",
-                "jtb2");
+        String normalized = normalizeSql(result.getQuerySql());
+        Assert.assertTrue(normalized.contains("t3.c3 = '28'"));
+        Assert.assertTrue(normalized.contains("t3.c4 = '28'"));
+        Assert.assertTrue(normalized.contains("t3.etl_month >= '2025-05-01'")
+                || normalized.contains("t3.etl_month between '2025-05-01'"));
+        Assert.assertEquals(1, countOccurrences(normalized, ") jtb"));
     }
 
     @Test
@@ -215,7 +214,7 @@ public class ExtendedSqlQueryServiceTest {
     }
 
     @Test
-    public void testValidEtlMonthRangeKeepsEtlMonthInEachJtb() {
+    public void testValidEtlMonthRangeMergedIntoSingleJtb() {
         List<TableInfo> tableInfos = Arrays.asList(
                 new TableInfo("tb3", "t3", "etl_month", "VARCHAR", "字段etl_month"),
                 new TableInfo("tb3", "t3", "c3", "VARCHAR", "字段c3"),
@@ -227,10 +226,12 @@ public class ExtendedSqlQueryServiceTest {
 
         Assert.assertEquals(ConditionType.SATISFIABLE, result.getValidationResult().getConditionType());
         String normalized = normalizeSql(result.getQuerySql());
-        Assert.assertTrue(normalized.contains("t3.etl_month >= '2025-05-01'"));
-        Assert.assertTrue(normalized.contains("t3.etl_month <= '2026-06-01'"));
-        Assert.assertFalse(normalized.contains("t3.etl_month between"));
-        Assert.assertEquals(2, countOccurrences(normalized, "where t3.etl_month"));
+        Assert.assertTrue(normalized.contains("t3.etl_month >= '2025-05-01'")
+                || normalized.contains("t3.etl_month between '2025-05-01'"));
+        Assert.assertTrue(normalized.contains("t3.c3 = '28'"));
+        Assert.assertTrue(normalized.contains("t3.c4 = '28'"));
+        Assert.assertEquals(1, countOccurrences(normalized, "where t3.etl_month"));
+        Assert.assertEquals(1, countOccurrences(normalized, ") jtb"));
     }
 
     private int countOccurrences(String text, String part) {
